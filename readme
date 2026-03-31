@@ -1,0 +1,184 @@
+config.json
+{
+  "common": {
+    "must": [
+      { "term": { "environment.keyword": "prod" } }
+    ],
+    "mustNot": [
+      { "term": { "status.keyword": "healthcheck" } }
+    ]
+  },
+
+  "domains": {
+    "Stage": {
+      "must": [
+        { "term": { "domain.keyword": "stage" } }
+      ]
+    },
+
+    "secure": {
+      "must": [
+        { "term": { "domain.keyword": "secure" } }
+      ]
+    },
+
+    "opers": {
+      "must": [
+        { "term": { "domain.keyword": "operations" } }
+      ]
+    }
+  },
+
+  "apps": {
+    "PA": {
+      "index": "iis-*",
+      "mustNot": [
+        {
+          "regexp": {
+            "uri_target.keyword": {
+              "value": "/(.*)/(rb|ruxitagentjs).*",
+              "case_insensitive": true
+            }
+          }
+        }
+      ]
+    },
+
+    "PB": {
+      "index": "iis-web*"
+    },
+
+    "PC": {
+      "index": "iis-api*"
+    }
+  }
+}
+
+
+2. CORE ENGINE (MERGE FILTERS)
+function Merge-Filters {
+    param($config, $appName, $domainName)
+
+    $commonMust = @($config.common.must)
+    $commonMustNot = @($config.common.mustNot)
+
+    $domain = $config.domains.$domainName
+    $app = $config.apps.$appName
+
+    $domainMust = if ($domain.must) { @($domain.must) } else { @() }
+    $domainMustNot = if ($domain.mustNot) { @($domain.mustNot) } else { @() }
+
+    $appMust = if ($app.must) { @($app.must) } else { @() }
+    $appMustNot = if ($app.mustNot) { @($app.mustNot) } else { @() }
+
+    return @{
+        must = $commonMust + $domainMust + $appMust
+        mustNot = $commonMustNot + $domainMustNot + $appMustNot
+    }
+}
+
+3. ELASTIC QUERY BUILDER
+function Build-Query {
+    param($config, $appName, $domainName)
+
+    $app = $config.apps[$appName]
+
+    $filters = Merge-Filters -config $config -appName $appName -domainName $domainName
+
+    return @{
+        size = 0
+        query = @{
+            bool = @{
+                must = $filters.must
+                must_not = $filters.mustNot
+            }
+        }
+        aggs = @{
+            avg_response = @{ avg = @{ field = "responseTime" } }
+            avg_trans = @{ value_count = @{ field = "transaction.keyword" } }
+            numberUsers = @{ cardinality = @{ field = "username.keyword" } }
+        }
+    }
+}
+
+4. PARALLEL EXECUTION (PRODUCTION FAST MOD
+
+$config = Get-Content ".\config.json" | ConvertFrom-Json
+
+$apps = $config.apps.PSObject.Properties.Name
+$domains = $config.domains.PSObject.Properties.Name
+
+$results = $apps | ForEach-Object -Parallel {
+
+    $app = $_
+    $config = $using:config
+    $domains = $using:domains
+    $ElasticHost = $using:ElasticHost
+
+    function Merge-Filters {
+        param($config, $appName, $domainName)
+
+        $commonMust = @($config.common.must)
+        $commonMustNot = @($config.common.mustNot)
+
+        $domain = $config.domains.$domainName
+        $app = $config.apps.$appName
+
+        $domainMust = if ($domain.must) { @($domain.must) } else { @() }
+        $domainMustNot = if ($domain.mustNot) { @($domain.mustNot) } else { @() }
+
+        $appMust = if ($app.must) { @($app.must) } else { @() }
+        $appMustNot = if ($app.mustNot) { @($app.mustNot) } else { @() }
+
+        return @{
+            must = $commonMust + $domainMust + $appMust
+            mustNot = $commonMustNot + $domainMustNot + $appMustNot
+        }
+    }
+
+    $appResults = @()
+
+    foreach ($domain in $domains) {
+
+        $appConfig = $config.apps[$app]
+
+        $uri = "$ElasticHost/$($appConfig.index)/_search"
+
+        $filters = Merge-Filters -config $config -appName $app -domainName $domain
+
+        $query = @{
+            size = 0
+            query = @{
+                bool = @{
+                    must = $filters.must
+                    must_not = $filters.mustNot
+                }
+            }
+            aggs = @{
+                avg_response = @{ avg = @{ field = "responseTime" } }
+                avg_trans = @{ value_count = @{ field = "transaction.keyword" } }
+                numberUsers = @{ cardinality = @{ field = "username.keyword" } }
+            }
+        }
+
+        $body = $query | ConvertTo-Json -Depth 20
+
+        $response = Invoke-RestMethod -Method POST `
+            -Uri $uri `
+            -Body $body `
+            -ContentType "application/json"
+
+        $appResults += [PSCustomObject]@{
+            App = $app
+            Domain = $domain
+            AvgResponse = $response.aggregations.avg_response.value
+            AvgTrans = $response.aggregations.avg_trans.value
+            NumberUsers = $response.aggregations.numberUsers.value
+        }
+    }
+
+    return $appResults
+
+} -ThrottleLimit 5
+
+$results | Sort-Object App, Domain | Format-Table
