@@ -152,4 +152,22 @@ Send-MailMessage `
     -BodyAsHtml `
     -SmtpServer $SMTPServer
 
+    -----------------------------------------------------------------
+    $grouped = $appResults | Group-Object Domain
+
+$rows = @()
+
+foreach ($g in $grouped) {
+    $rows += [PSCustomObject]@{
+        Site = $g.Name
+        Transactions = ($g.Group | Measure-Object Transactions -Sum).Sum
+        AvgResponseTime = [math]::Round(($g.Group | Measure-Object AvgResponseTime -Average).Average,3)
+        UserCount = ($g.Group | Measure-Object UserCount -Sum).Sum
+    }
+}
+
+----------------------------------------
+
+
+
 Write-Host "Email Sent Successfully"
