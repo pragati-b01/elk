@@ -1,265 +1,155 @@
 # ==============================
-# 1. CONFIGURATION SECTION
+# CONFIG
 # ==============================
+$SMTPServer = "smtp.company.com"
+$From = "noreply@company.com"
+$To = "team@company.com"
+$Subject = "Daily ELK Performance Report"
 
-$config = @{
-    ElasticHost = "https://your-elastic-host:9200"
-
-    Credential = Get-Credential   # or secure vault
-
-    domainField = "co-host"
-
-    domains = @{
-        Stage  = "stage.test.com"
-        Secure = "secure.test.com"
-        Oper   = "operations.test.com"
-    }
-
-    common = @{
-        must = @(
-            # Add common filters here if needed
-        )
-        mustNot = @()
-    }
-
-    apps = @{
-        PA = @{
-            index = "iis-*"
-            mustNot = @(
-                @{
-                    regexp = @{
-                        "uri_target.keyword" = @{
-                            value = "/(.*)/(rb|ruxitagentjs).*"
-                            case_insensitive = $true
-                        }
-                    }
-                }
-            )
-            must = @()
-        }
-
-        PB = @{
-            index = "iis-web*"
-            must = @(
-                # example app-specific must filter
-                # @{ term = @{ "status.keyword" = "200" } }
-            )
-            mustNot = @()
-        }
-
-        PC = @{
-            index = "iis-web*"
-            must = @()
-            mustNot = @()
-        }
-    }
-}
+$TimeRangeText = "Last 24 Hours"
+$StartTime = (Get-Date).AddHours(-24).ToString("o")
+$EndTime = (Get-Date).ToString("o")
 
 # ==============================
-# 2. FUNCTION: BUILD FILTERS
+# HTML SECTION BUILDER
 # ==============================
-
-function Build-Filters {
-    param($config, $app, $domainValue)
-
-    $domainField = $config.domainField
-
-    # domain filter (IMPORTANT FIX)
-    $domainFilter = @(
-        @{
-            match_phrase = @{
-                $domainField = $domainValue
-            }
-        }
+function New-AppHtmlSection {
+    param (
+        [string]$AppName,
+        [array]$Rows
     )
 
-    $must =
-        $config.common.must +
-        $domainFilter +
-        $config.apps[$app].must
+    $rowsHtml = ""
 
-    $mustNot =
-        $config.common.mustNot +
-        $config.apps[$app].mustNot
-
-    return @{
-        must = $must
-        mustNot = $mustNot
+    foreach ($row in $Rows) {
+        $rowsHtml += @"
+<tr>
+<td>$($row.Site)</td>
+<td>$($row.Transactions)</td>
+<td>$($row.AvgResponseTime)</td>
+<td>$($row.UserCount)</td>
+</tr>
+"@
     }
+
+    return @"
+<table style='width:100%;border-collapse:collapse;font-family:Arial;margin-bottom:25px'>
+<tr style='background:#2f75b5;color:white'>
+<th colspan='4' style='padding:8px;text-align:left'>$AppName</th>
+</tr>
+
+<tr style='background:#d9e1f2'>
+<th colspan='4' style='padding:6px;text-align:left'>$TimeRangeText</th>
+</tr>
+
+<tr style='background:#f2f2f2'>
+<th>Site</th>
+<th>Transactions</th>
+<th>Avg Response Time (sec)</th>
+<th>User Count</th>
+</tr>
+
+$rowsHtml
+</table>
+"@
 }
 
 # ==============================
-# 3. FUNCTION: EXECUTE QUERY
+# DATA TRANSFORMATION
 # ==============================
-
-function Invoke-ElasticQuery {
-    param(
-        $config,
-        $app,
-        $domainKey
+function Convert-ElasticToRows {
+    param (
+        $ElasticResponse,
+        [string]$AppName
     )
 
-    $domainValue = $config.domains[$domainKey]
-    $filters = Build-Filters $config $app $domainValue
+    $rows = @()
 
-    $index = $config.apps[$app].index
-    $uri = "$($config.ElasticHost)/$index/_search"
+    # 🔴 Adjust based on your aggregation structure
+    foreach ($bucket in $ElasticResponse.aggregations.app.buckets) {
 
-    $body = @{
-        size = 0
-        query = @{
-            bool = @{
-                must = $filters.must
-                must_not = $filters.mustNot
-            }
-        }
-        aggs = @{
-            avg_response = @{
-                avg = @{
-                    field = "response_time"
-                }
-            }
-            total_hits = @{
-                value_count = @{
-                    field = "_id"
-                }
-            }
-        }
-    } | ConvertTo-Json -Depth 10
+        $siteName = $bucket.key
 
-    try {
-        $response = Invoke-RestMethod -Method POST `
-            -Uri $uri `
-            -Credential $config.Credential `
-            -Body $body `
-            -ContentType "application/json"
+        $transactions = $bucket.doc_count
+        $avgResponse = if ($bucket.avg_response.value) {
+            [math]::Round($bucket.avg_response.value, 3)
+        } else { 0 }
 
-        return [PSCustomObject]@{
-            App     = $app
-            Domain  = $domainKey
-            Avg     = $response.aggregations.avg_response.value
-            Count   = $response.aggregations.total_hits.value
+        $users = if ($bucket.unique_users.value) {
+            $bucket.unique_users.value
+        } else { 0 }
+
+        $rows += [PSCustomObject]@{
+            Site = $siteName
+            Transactions = $transactions
+            AvgResponseTime = $avgResponse
+            UserCount = $users
         }
     }
-    catch {
-        return [PSCustomObject]@{
-            App     = $app
-            Domain  = $domainKey
-            Avg     = 0
-            Count   = 0
-            Error   = $_.Exception.Message
-        }
+
+    return $rows
+}
+
+# ==============================
+# MAIN EXECUTION
+# ==============================
+
+$appList = @("PEMS","LTCOP","BHSM")  # Add all apps here
+
+$fullHtml = @"
+<html>
+<body style='font-family:Arial'>
+<h2>Application Performance Report</h2>
+"@
+
+foreach ($app in $appList) {
+
+    Write-Host "Processing $app..."
+
+    # 🔹 Your existing functions
+    $dynamicApp = Get-DynamicAppName -App $app
+    $hosts = Get-HostName -App $app
+
+    $elasticResponse = Invoke-ElasticQuery `
+        -App $dynamicApp `
+        -Hosts $hosts `
+        -StartTime $StartTime `
+        -EndTime $EndTime
+
+    if (-not $elasticResponse) {
+        Write-Warning "$app returned no data"
+        continue
     }
-}
 
-# ==============================
-# 4. PARALLEL EXECUTION ENGINE
-# ==============================
+    # 🔹 Transform ELK → Table Rows
+    $rows = Convert-ElasticToRows -ElasticResponse $elasticResponse -AppName $app
 
-$Apps = @("PA", "PB", "PC")
-$Domains = @("Stage", "Secure", "Oper")
-
-$Results = [System.Collections.Concurrent.ConcurrentBag[object]]::new()
-
-$Jobs = foreach ($app in $Apps) {
-    foreach ($domain in $Domains) {
-
-        Start-Job -ScriptBlock {
-            param($config, $app, $domain)
-
-            # recreate function inside job
-            function Build-Filters {
-                param($config, $app, $domainValue)
-
-                $domainField = $config.domainField
-
-                $domainFilter = @(
-                    @{
-                        match_phrase = @{
-                            $domainField = $domainValue
-                        }
-                    }
-                )
-
-                $must =
-                    $config.common.must +
-                    $domainFilter +
-                    $config.apps[$app].must
-
-                $mustNot =
-                    $config.common.mustNot +
-                    $config.apps[$app].mustNot
-
-                return @{
-                    must = $must
-                    mustNot = $mustNot
-                }
-            }
-
-            $filters = Build-Filters $config $app $config.domains[$domain]
-
-            $index = $config.apps[$app].index
-            $uri = "$($config.ElasticHost)/$index/_search"
-
-            $body = @{
-                size = 0
-                query = @{
-                    bool = @{
-                        must = $filters.must
-                        must_not = $filters.mustNot
-                    }
-                }
-                aggs = @{
-                    avg_response = @{
-                        avg = @{ field = "response_time" }
-                    }
-                }
-            } | ConvertTo-Json -Depth 10
-
-            try {
-                $response = Invoke-RestMethod -Method POST `
-                    -Uri $uri `
-                    -Credential $config.Credential `
-                    -Body $body `
-                    -ContentType "application/json"
-
-                [PSCustomObject]@{
-                    App    = $app
-                    Domain = $domain
-                    Avg    = $response.aggregations.avg_response.value
-                }
-            }
-            catch {
-                [PSCustomObject]@{
-                    App    = $app
-                    Domain = $domain
-                    Avg    = 0
-                }
-            }
-
-        } -ArgumentList $config, $app, $domain
+    if ($rows.Count -eq 0) {
+        Write-Warning "$app has empty rows"
+        continue
     }
+
+    # 🔹 Build HTML Section
+    $sectionHtml = New-AppHtmlSection -AppName $app -Rows $rows
+
+    $fullHtml += $sectionHtml
 }
 
-# Wait for all jobs
-$Jobs | Wait-Job | ForEach-Object {
-    $Results.Add((Receive-Job $_))
-}
-
-# Cleanup
-$Jobs | Remove-Job
+$fullHtml += @"
+<p>Thanks,<br/>Monitoring Team</p>
+</body>
+</html>
+"@
 
 # ==============================
-# 5. FINAL OUTPUT FORMAT
+# SEND EMAIL
 # ==============================
+Send-MailMessage `
+    -From $From `
+    -To $To `
+    -Subject $Subject `
+    -Body $fullHtml `
+    -BodyAsHtml `
+    -SmtpServer $SMTPServer
 
-$Grouped = $Results | Group-Object App
-
-foreach ($appGroup in $Grouped) {
-
-    Write-Host "`n===================="
-    Write-Host $appGroup.Name
-    Write-Host "===================="
-
-    $appGroup.Group | Format-Table -AutoSize
-}
+Write-Host "Email Sent Successfully"
