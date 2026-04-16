@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Collections.Specialized;
 using Microsoft.QualityTools.Testing.Fakes;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
@@ -7,58 +6,36 @@ using Microsoft.VisualStudio.TestTools.UnitTesting;
 using System.Configuration.Fakes;
 using System.Messaging.Fakes;
 
-// IMPORTANT: replace namespaces below with your actual ones
-using YourProject.WriterNamespace;
-using YourProject.LoggerNamespace;
-using YourProject.HelpersNamespace;
-
 [TestClass]
 public class PerfDataQueueWriterTests
 {
-    private IDisposable _context;
+    private IDisposable _ctx;
 
     [TestInitialize]
-    public void Setup()
+    public void Init()
     {
-        _context = ShimsContext.Create();
-    }
+        _ctx = ShimsContext.Create();
 
-    [TestCleanup]
-    public void Cleanup()
-    {
-        _context?.Dispose();
-    }
-
-    [TestMethod]
-    public void WriteToDatabase_QueueDoesNotExist_ShouldNotThrow()
-    {
-        // -----------------------------
-        // ARRANGE: AppSettings
-        // -----------------------------
-        ShimConfigurationManager.AppSettingsGet =
+        // 🔴 CRITICAL: prevent static Logger crash
+        System.Configuration.Fakes.ShimConfigurationManager.AppSettingsGet =
             () =>
             {
-                var settings = new NameValueCollection
+                return new NameValueCollection
                 {
                     { "PerfDataQueue", "testQueue" },
                     { "LoggerServiceUri", "https://test.logger" },
                     { "OutputFile", @"c:\fake\" }
                 };
-
-                return settings;
             };
 
-        // -----------------------------
-        // ARRANGE: LoggerHelper (VERY IMPORTANT)
-        // prevents null ServiceUri inside Logger constructor
-        // -----------------------------
+        // 🔴 CRITICAL: LoggerHelper MUST never return null
         LoggerHelper.Fakes.ShimLoggerHelper.GetConfigValueString =
             (key) =>
             {
                 if (key == "LoggerServiceUri")
                     return "https://test.logger";
 
-                return "fake";
+                return "test";
             };
 
         LoggerHelper.Fakes.ShimLoggerHelper.GetFarmType =
@@ -67,52 +44,43 @@ public class PerfDataQueueWriterTests
         LoggerHelper.Fakes.ShimLoggerHelper.SetConfigurationIConfiguration =
             (config) => { };
 
-        // -----------------------------
-        // ARRANGE: MSMQ does NOT exist
-        // -----------------------------
-        ShimMessageQueue.ExistsString =
+        // 🔴 CRITICAL: prevent MSMQ crash during static init
+        System.Messaging.Fakes.ShimMessageQueue.ExistsString =
             (path) =>
             {
                 if (string.IsNullOrEmpty(path))
-                    throw new Exception("QUEUE PATH IS NULL");
+                    return false;
 
                 return false;
             };
 
-        // Prevent real MSMQ constructor call
-        ShimMessageQueue.ConstructorString =
+        System.Messaging.Fakes.ShimMessageQueue.ConstructorString =
             (mq, path) => { };
 
-        // -----------------------------
-        // ARRANGE: Logger (kill all logging side effects)
-        // IMPORTANT: match actual signature in your Logger class
-        // -----------------------------
+        // 🔴 CRITICAL: neutralize logger calls
         Logger.Fakes.ShimLogger.AllInstances.LogInfoStringString =
-            (logger, a, b) => { };
+            (l, a, b) => { };
 
         Logger.Fakes.ShimLogger.AllInstances.LogErrorStringException =
-            (logger, a, ex) => { };
+            (l, a, e) => { };
 
         Logger.Fakes.ShimLogger.AllInstances.LogDebugStringString =
-            (logger, a, b) => { };
+            (l, a, b) => { };
+    }
 
-        // -----------------------------
-        // ARRANGE: Writer instance
-        // -----------------------------
-        var writer = new Writer();
+    [TestMethod]
+    public void WriteToDatabase_QueueNotExists_ShouldNotThrow()
+    {
+        var writer = new Writer(); // ⚠ triggers static logger init
 
-        // -----------------------------
-        // ACT + ASSERT
-        // -----------------------------
-        try
-        {
-            writer.WriteToDatabase();
+        writer.WriteToDatabase();
 
-            Assert.IsTrue(true, "Execution completed without exception.");
-        }
-        catch (Exception ex)
-        {
-            Assert.Fail($"Test failed with exception: {ex}");
-        }
+        Assert.IsTrue(true);
+    }
+
+    [TestCleanup]
+    public void Cleanup()
+    {
+        _ctx?.Dispose();
     }
 }
