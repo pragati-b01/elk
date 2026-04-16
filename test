@@ -1,0 +1,106 @@
+using Microsoft.QualityTools.Testing.Fakes;
+using Microsoft.VisualStudio.TestTools.UnitTesting;
+using System.Configuration.Fakes;
+using System.Messaging.Fakes;
+
+[TestClass]
+public class PerfDataQueueReaderTests
+{
+    [TestMethod]
+    public void WriteToDatabase_QueueNotExists()
+    {
+        using (ShimsContext.Create())
+        {
+            // Arrange
+            ShimConfigurationManager.AppSettingsGet = (key) =>
+            {
+                return "testQueue";
+            };
+
+            ShimMessageQueue.ExistsString = (path) => false;
+
+            // Act
+            PerfDataQueueReader.WriteToDatabase();
+
+            // Assert
+            // No exception = pass
+        }
+    }
+}
+
+[TestMethod]
+public void WriteToDatabase_StopMessage_StopsLoop()
+{
+    using (ShimsContext.Create())
+    {
+        // Arrange
+        ShimConfigurationManager.AppSettingsGet = (key) => "testQueue";
+
+        ShimMessageQueue.ExistsString = (path) => true;
+
+        var callCount = 0;
+
+        ShimMessageQueue.AllInstances.Receive = (mq) =>
+        {
+            callCount++;
+
+            var msg = new ShimMessage();
+            msg.BodyGet = () => new PerfData { MethodName = "#STOPME#" };
+
+            return msg;
+        };
+
+        // Act
+        PerfDataQueueReader.WriteToDatabase();
+
+        // Assert
+        Assert.AreEqual(1, callCount);
+    }
+}
+
+[TestMethod]
+public void WriteToDatabase_ValidMessage_CallsDB()
+{
+    using (ShimsContext.Create())
+    {
+        // Arrange
+        ShimConfigurationManager.AppSettingsGet = (key) => "testQueue";
+        ShimMessageQueue.ExistsString = (path) => true;
+
+        int dbCallCount = 0;
+
+        // Shim PerfDataCapture
+        ShimPerfDataCapture.AllInstances.WriteToDatabaseFromOpenTelemetryPerfData =
+            (obj, data) =>
+            {
+                dbCallCount++;
+                return true;
+            };
+
+        int call = 0;
+
+        ShimMessageQueue.AllInstances.Receive = (mq) =>
+        {
+            call++;
+
+            var msg = new ShimMessage();
+
+            if (call == 1)
+            {
+                msg.BodyGet = () => new PerfData { MethodName = "Test" };
+            }
+            else
+            {
+                msg.BodyGet = () => new PerfData { MethodName = "#STOPME#" };
+            }
+
+            return msg;
+        };
+
+        // Act
+        PerfDataQueueReader.WriteToDatabase();
+
+        // Assert
+        Assert.AreEqual(1, dbCallCount);
+    }
+}
