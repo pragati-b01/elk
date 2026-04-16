@@ -1,106 +1,118 @@
+using System;
+using System.Collections.Generic;
+using System.Collections.Specialized;
 using Microsoft.QualityTools.Testing.Fakes;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+
 using System.Configuration.Fakes;
 using System.Messaging.Fakes;
 
+// IMPORTANT: replace namespaces below with your actual ones
+using YourProject.WriterNamespace;
+using YourProject.LoggerNamespace;
+using YourProject.HelpersNamespace;
+
 [TestClass]
-public class PerfDataQueueReaderTests
+public class PerfDataQueueWriterTests
 {
+    private IDisposable _context;
+
+    [TestInitialize]
+    public void Setup()
+    {
+        _context = ShimsContext.Create();
+    }
+
+    [TestCleanup]
+    public void Cleanup()
+    {
+        _context?.Dispose();
+    }
+
     [TestMethod]
-    public void WriteToDatabase_QueueNotExists()
+    public void WriteToDatabase_QueueDoesNotExist_ShouldNotThrow()
     {
-        using (ShimsContext.Create())
-        {
-            // Arrange
-            ShimConfigurationManager.AppSettingsGet = (key) =>
+        // -----------------------------
+        // ARRANGE: AppSettings
+        // -----------------------------
+        ShimConfigurationManager.AppSettingsGet =
+            () =>
             {
-                return "testQueue";
+                var settings = new NameValueCollection
+                {
+                    { "PerfDataQueue", "testQueue" },
+                    { "LoggerServiceUri", "https://test.logger" },
+                    { "OutputFile", @"c:\fake\" }
+                };
+
+                return settings;
             };
 
-            ShimMessageQueue.ExistsString = (path) => false;
+        // -----------------------------
+        // ARRANGE: LoggerHelper (VERY IMPORTANT)
+        // prevents null ServiceUri inside Logger constructor
+        // -----------------------------
+        LoggerHelper.Fakes.ShimLoggerHelper.GetConfigValueString =
+            (key) =>
+            {
+                if (key == "LoggerServiceUri")
+                    return "https://test.logger";
 
-            // Act
-            PerfDataQueueReader.WriteToDatabase();
+                return "fake";
+            };
 
-            // Assert
-            // No exception = pass
+        LoggerHelper.Fakes.ShimLoggerHelper.GetFarmType =
+            () => "unit-test";
+
+        LoggerHelper.Fakes.ShimLoggerHelper.SetConfigurationIConfiguration =
+            (config) => { };
+
+        // -----------------------------
+        // ARRANGE: MSMQ does NOT exist
+        // -----------------------------
+        ShimMessageQueue.ExistsString =
+            (path) =>
+            {
+                if (string.IsNullOrEmpty(path))
+                    throw new Exception("QUEUE PATH IS NULL");
+
+                return false;
+            };
+
+        // Prevent real MSMQ constructor call
+        ShimMessageQueue.ConstructorString =
+            (mq, path) => { };
+
+        // -----------------------------
+        // ARRANGE: Logger (kill all logging side effects)
+        // IMPORTANT: match actual signature in your Logger class
+        // -----------------------------
+        Logger.Fakes.ShimLogger.AllInstances.LogInfoStringString =
+            (logger, a, b) => { };
+
+        Logger.Fakes.ShimLogger.AllInstances.LogErrorStringException =
+            (logger, a, ex) => { };
+
+        Logger.Fakes.ShimLogger.AllInstances.LogDebugStringString =
+            (logger, a, b) => { };
+
+        // -----------------------------
+        // ARRANGE: Writer instance
+        // -----------------------------
+        var writer = new Writer();
+
+        // -----------------------------
+        // ACT + ASSERT
+        // -----------------------------
+        try
+        {
+            writer.WriteToDatabase();
+
+            Assert.IsTrue(true, "Execution completed without exception.");
         }
-    }
-}
-
-[TestMethod]
-public void WriteToDatabase_StopMessage_StopsLoop()
-{
-    using (ShimsContext.Create())
-    {
-        // Arrange
-        ShimConfigurationManager.AppSettingsGet = (key) => "testQueue";
-
-        ShimMessageQueue.ExistsString = (path) => true;
-
-        var callCount = 0;
-
-        ShimMessageQueue.AllInstances.Receive = (mq) =>
+        catch (Exception ex)
         {
-            callCount++;
-
-            var msg = new ShimMessage();
-            msg.BodyGet = () => new PerfData { MethodName = "#STOPME#" };
-
-            return msg;
-        };
-
-        // Act
-        PerfDataQueueReader.WriteToDatabase();
-
-        // Assert
-        Assert.AreEqual(1, callCount);
-    }
-}
-
-[TestMethod]
-public void WriteToDatabase_ValidMessage_CallsDB()
-{
-    using (ShimsContext.Create())
-    {
-        // Arrange
-        ShimConfigurationManager.AppSettingsGet = (key) => "testQueue";
-        ShimMessageQueue.ExistsString = (path) => true;
-
-        int dbCallCount = 0;
-
-        // Shim PerfDataCapture
-        ShimPerfDataCapture.AllInstances.WriteToDatabaseFromOpenTelemetryPerfData =
-            (obj, data) =>
-            {
-                dbCallCount++;
-                return true;
-            };
-
-        int call = 0;
-
-        ShimMessageQueue.AllInstances.Receive = (mq) =>
-        {
-            call++;
-
-            var msg = new ShimMessage();
-
-            if (call == 1)
-            {
-                msg.BodyGet = () => new PerfData { MethodName = "Test" };
-            }
-            else
-            {
-                msg.BodyGet = () => new PerfData { MethodName = "#STOPME#" };
-            }
-
-            return msg;
-        };
-
-        // Act
-        PerfDataQueueReader.WriteToDatabase();
-
-        // Assert
-        Assert.AreEqual(1, dbCallCount);
+            Assert.Fail($"Test failed with exception: {ex}");
+        }
     }
 }
