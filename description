@@ -1,0 +1,362 @@
+# Unified Reporting Utility – Design Options & Approach
+
+## 📌 Objective
+
+To replace multiple task schedulers and email logic embedded in PowerShell scripts with a **centralized .NET utility**, while:
+
+* Reusing existing scripts (no major rewrite)
+* Preserving current HTML output generation
+* Standardizing email delivery
+* Supporting multiple report types (HealthCheck, License, Performance, etc.)
+
+---
+
+## 🧩 Current State
+
+Each PowerShell script currently:
+
+* Reads its own inputs (CSV/config)
+* Performs validation/checks
+* Generates HTML report
+* Sends email
+
+### Issues:
+
+* Duplicate email logic across scripts
+* Hard to maintain SMTP changes
+* Multiple schedulers to manage
+* Tight coupling of logic + presentation + delivery
+
+---
+
+## 🎯 Target State
+
+* PowerShell scripts → **data processing + HTML generation only**
+* .NET utility → **execution + email delivery**
+* Scheduler → **single entry point (utility)**
+
+---
+
+# 🧠 Design Approaches
+
+---
+
+## 🟢 Approach 1: Pass HTML Content via Arguments
+
+### Description:
+
+Scripts generate HTML and pass it as a command-line argument to the .NET utility.
+
+### Example:
+
+```
+--body "<html>...</html>"
+```
+
+### ✅ Pros:
+
+* No intermediate file required
+* Direct integration
+
+### ❌ Cons:
+
+* Command-line size limit (~32KB)
+* HTML encoding/escaping issues
+* Unreliable for large reports
+* Difficult debugging
+
+### 🚫 Verdict:
+
+**Not recommended for production**
+
+---
+
+## 🟢 Approach 2: File-Based Integration (Recommended Baseline)
+
+### Description:
+
+Scripts generate HTML and save to a file.
+.NET utility reads the file and sends email.
+
+### Example:
+
+```
+--bodyFile "C:\Reports\health.html"
+```
+
+### ✅ Pros:
+
+* No size limitations
+* Easy debugging (open HTML directly)
+* Works with existing scripts
+* Clean separation of concerns
+
+### ❌ Cons:
+
+* Requires file management
+* Needs consistent naming/location
+
+### 🏆 Verdict:
+
+**Best practical approach with minimal changes**
+
+---
+
+## 🟢 Approach 3: Script Execution via .NET
+
+### Description:
+
+.NET utility executes PowerShell scripts and captures output file path.
+
+### Flow:
+
+1. .NET runs script
+2. Script generates HTML file
+3. Script outputs file path
+4. .NET reads file and sends email
+
+### ✅ Pros:
+
+* Full control from one utility
+* Eliminates need for multiple schedulers
+* Centralized logging and error handling
+
+### ❌ Cons:
+
+* Requires handling execution failures
+* Needs timeout and retry logic
+
+### 🏆 Verdict:
+
+**Recommended for centralized orchestration**
+
+---
+
+## 🟢 Approach 4: Config-Driven Execution
+
+### Description:
+
+Use a configuration file to define tasks and defaults.
+
+### Example:
+
+```json
+{
+  "tasks": {
+    "HealthCheck": {
+      "script": "HealthCheck.ps1",
+      "subject": "Health Report",
+      "to": "ops@company.com"
+    }
+  }
+}
+```
+
+### ✅ Pros:
+
+* Centralized configuration
+* Easy to maintain and extend
+* Avoids long argument lists
+
+### ❌ Cons:
+
+* Requires config management discipline
+* Less flexible without overrides
+
+### 🏆 Verdict:
+
+**Essential for scalable design**
+
+---
+
+## 🟢 Approach 5: Argument-Only Control
+
+### Description:
+
+All parameters passed via command line.
+
+### Example:
+
+```
+--script HealthCheck.ps1 --to x --subject y --smtp server
+```
+
+### ✅ Pros:
+
+* Fully dynamic
+* No config dependency
+
+### ❌ Cons:
+
+* Hard to maintain
+* Error-prone
+* Not scalable
+
+### 🚫 Verdict:
+
+**Not suitable for complex systems**
+
+---
+
+## 🟢 Approach 6: Hybrid Model (Best Practice)
+
+### Description:
+
+Combine config + arguments:
+
+* Config → default values
+* Arguments → runtime overrides
+
+### Example:
+
+```
+MyUtility.exe --task HealthCheck --subject "Override"
+```
+
+### Resolution Priority:
+
+1. Arguments
+2. Config
+3. Defaults
+
+### ✅ Pros:
+
+* Flexible and clean
+* Production-friendly
+* Scalable
+* Easy scheduler integration
+
+### ❌ Cons:
+
+* Slightly more implementation effort
+
+### 🏆 Verdict:
+
+**Recommended final architecture**
+
+---
+
+# 🧠 Task Identification Strategies
+
+## ❌ Option: Use Subject to Decide Task
+
+* Fragile and unreliable
+* Breaks when subject changes
+
+👉 **Not recommended**
+
+---
+
+## ✅ Option: Explicit Task Argument (Best)
+
+```
+--task HealthCheck
+```
+
+### Benefits:
+
+* Clear intent
+* Easy mapping
+* Scalable for future tasks
+
+---
+
+## 🟡 Option: Script-Based Execution
+
+```
+--script HealthCheck.ps1
+```
+
+### Use case:
+
+* Ad-hoc or custom execution
+
+---
+
+## 🏆 Recommended:
+
+**Primary → `--task`**
+**Optional → `--script` override**
+
+---
+
+# 🧩 Final Recommended Architecture
+
+### ✔ PowerShell Scripts
+
+* Generate HTML
+* Save to file
+* No email logic
+
+### ✔ .NET Utility
+
+* Accept task or script
+* Read config
+* Execute script (optional)
+* Read HTML file
+* Send email
+
+### ✔ Scheduler
+
+* Single entry point
+* Pass task name
+
+---
+
+# 🔄 Execution Flow
+
+1. Scheduler triggers:
+
+```
+MyUtility.exe --task HealthCheck
+```
+
+2. Utility:
+
+* Reads config
+* Executes script
+* Gets output file
+* Sends email
+
+---
+
+# ⚠️ Key Considerations
+
+### ✔ Do:
+
+* Use file path for HTML
+* Use config for defaults
+* Use arguments for overrides
+* Implement logging & error handling
+
+### ❌ Avoid:
+
+* Passing large HTML via arguments
+* Using subject for logic
+* Duplicating logic in scripts and .NET
+
+---
+
+# 🚀 Future Enhancements
+
+* Dashboard for report history
+* Alerting only on failures
+* Retry mechanisms
+* Integration with Teams/Slack
+* Database-backed configuration
+
+---
+
+# 🏁 Conclusion
+
+The most effective and production-ready solution is:
+
+👉 **Hybrid Model (Config + Arguments) + File-Based HTML + Task-Based Execution**
+
+This approach ensures:
+
+* Minimal changes to existing scripts
+* Centralized and maintainable system
+* Scalability for future enhancements
+
+---
