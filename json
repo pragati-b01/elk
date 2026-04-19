@@ -1,0 +1,27 @@
+{
+  "Smtp": {
+    "Server": "smtp.company.com",
+    "Port": 25,
+    "From": "noreply@company.com"
+  },
+  "Execution": {
+    "TimeoutSeconds": 60,
+    "RetryCount": 3
+  },
+  "Tasks": {
+    "HealthCheck": {
+      "Script": "C:\\UnifiedUtility\\Scripts\\HealthCheck.ps1",
+      "OutputFolder": "C:\\UnifiedUtility\\Reports\\Health",
+      "DefaultSubject": "Health Report",
+      "To": "ops@company.com"
+    }
+  }
+}
+
+-------------------
+
+MyUtility.exe --task=HealthCheck
+
+MyUtility.exe --task=HealthCheck --subject="Urgent Report"
+
+MyUtility.exe --task=HealthCheck --bodyFile="C:\Reports\file.html"
