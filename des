@@ -1,0 +1,425 @@
+# 📘 Unified Reporting Utility – Technical Design Document
+
+---
+
+# 1. 📌 Overview
+
+## 1.1 Purpose
+
+Design a **centralized .NET-based utility** to:
+
+* Execute existing PowerShell scripts (unchanged logic)
+* Handle email delivery centrally
+* Reduce scheduler duplication
+* Improve maintainability and scalability
+
+---
+
+## 1.2 Scope
+
+✔ Reuse existing scripts (HealthCheck, License, Performance)
+✔ Remove email logic from scripts
+✔ Support multiple execution modes
+✔ Provide flexible configuration
+
+---
+
+# 2. 🧩 Current Architecture (As-Is)
+
+```
++-------------------+       +-------------------+
+| Task Scheduler 1  | ----> | HealthCheck.ps1   |
++-------------------+       | - Read CSV        |
+                            | - Generate HTML   |
++-------------------+       | - Send Email ❌   |
+| Task Scheduler 2  | ----> +-------------------+
++-------------------+
+
++-------------------+       +-------------------+
+| Task Scheduler 3  | ----> | License.ps1       |
++-------------------+       | - Read Config     |
+                            | - Generate HTML   |
+                            | - Send Email ❌   |
+                            +-------------------+
+```
+
+---
+
+## 2.1 Problems
+
+* ❌ Duplicate email logic
+* ❌ Multiple schedulers
+* ❌ Hard to maintain SMTP changes
+* ❌ Tight coupling (logic + presentation + delivery)
+
+---
+
+# 3. 🎯 Target Architecture (To-Be)
+
+```
+                  +----------------------+
+                  |   Task Scheduler     |
+                  | (Single Entry Point) |
+                  +----------+-----------+
+                             |
+                             v
+                  +----------------------+
+                  |   .NET Utility       |
+                  |----------------------|
+                  | - Task Resolver      |
+                  | - Script Executor    |
+                  | - File Reader        |
+                  | - Email Sender       |
+                  +----------+-----------+
+                             |
+         -------------------------------------------
+         |                    |                    |
+         v                    v                    v
++----------------+  +----------------+  +----------------+
+| HealthCheck.ps1|  | License.ps1    |  | PerfReport.ps1 |
+| - Generate HTML|  | - Generate HTML|  | - Generate HTML|
+| - Save to file |  | - Save to file |  | - Save to file |
++----------------+  +----------------+  +----------------+
+
+                             |
+                             v
+                  +----------------------+
+                  |   SMTP Server        |
+                  +----------------------+
+```
+
+---
+
+# 4. 🧠 Design Approaches
+
+---
+
+## 4.1 Approach A – Argument-Based HTML Passing ❌
+
+```
+Script → HTML → CLI Argument → .NET
+```
+
+### Issues:
+
+* Command-line size limit (~32KB)
+* Encoding/escaping problems
+* Not reliable for large reports
+
+👉 **Rejected**
+
+---
+
+## 4.2 Approach B – File-Based Integration ✅
+
+```
+Script → HTML File → .NET → Email
+```
+
+### Flow:
+
+1. Script generates HTML
+2. Saves to file
+3. .NET reads file
+4. Sends email
+
+### Diagram:
+
+```
+[Script]
+   |
+   v
+[HTML File] ---> [.NET Utility] ---> [Email]
+```
+
+### Benefits:
+
+* No size limitation
+* Easy debugging
+* Minimal script changes
+
+👉 **Adopted as core mechanism**
+
+---
+
+## 4.3 Approach C – Script Execution via .NET ✅
+
+```
+.NET → Executes Script → Gets Output → Sends Email
+```
+
+### Flow:
+
+```
+[Scheduler]
+     |
+     v
+[.NET Utility]
+     |
+     v
+[Execute Script]
+     |
+     v
+[HTML File]
+     |
+     v
+[Email Sender]
+```
+
+### Benefits:
+
+* Centralized control
+* Single scheduler
+* Logging and error handling
+
+---
+
+## 4.4 Approach D – Config-Driven Execution ✅
+
+### Config Structure:
+
+```json
+{
+  "tasks": {
+    "HealthCheck": {
+      "script": "HealthCheck.ps1",
+      "outputFolder": "C:\\Reports\\Health",
+      "subject": "Health Report",
+      "to": "ops@company.com"
+    }
+  }
+}
+```
+
+### Benefits:
+
+* Centralized management
+* Easy to extend
+* Reduces CLI complexity
+
+---
+
+## 4.5 Approach E – Hybrid Model (Final Recommendation) 🏆
+
+```
+Arguments → Override
+Config     → Default
+```
+
+### Resolution Priority:
+
+```
+[Arguments] > [Config] > [Defaults]
+```
+
+### Example:
+
+```
+MyUtility.exe --task HealthCheck --subject "Override"
+```
+
+---
+
+# 5. 🧩 Task Identification Strategy
+
+---
+
+## ❌ Option: Subject-Based Logic
+
+```
+IF subject == "Health" → run HealthCheck
+```
+
+### Issues:
+
+* Fragile
+* Not scalable
+* Breaks easily
+
+👉 **Rejected**
+
+---
+
+## ✅ Option: Task-Based Execution (Recommended)
+
+```
+--task HealthCheck
+```
+
+### Diagram:
+
+```
+[Input Argument]
+       |
+       v
+   [Task Resolver]
+       |
+       v
+[Load Config for Task]
+       |
+       v
+[Execute Script]
+```
+
+---
+
+## 🟡 Optional: Script Override
+
+```
+--script Custom.ps1
+```
+
+---
+
+# 6. ⚙️ Component Design
+
+---
+
+## 6.1 Modules
+
+### 1. Task Resolver
+
+* Reads `--task`
+* Maps to config
+
+---
+
+### 2. Script Executor
+
+* Runs PowerShell script
+* Handles timeout & exit codes
+
+---
+
+### 3. Output Handler
+
+* Reads HTML file
+* Supports:
+
+  * Direct file
+  * Latest file in folder
+
+---
+
+### 4. Email Sender
+
+* Sends email using SMTP
+* Supports:
+
+  * HTML body
+  * Attachments
+  * Retry logic
+
+---
+
+### 5. Config Manager
+
+* Reads JSON config
+* Provides defaults
+
+---
+
+# 7. 🔄 Execution Flow (End-to-End)
+
+```
+Step 1: Scheduler triggers
+    |
+    v
+MyUtility.exe --task HealthCheck
+    |
+    v
+Step 2: Load Config
+    |
+    v
+Step 3: Execute Script
+    |
+    v
+Step 4: Script generates HTML file
+    |
+    v
+Step 5: Utility reads file
+    |
+    v
+Step 6: Send Email
+```
+
+---
+
+# 8. 📁 Folder Structure
+
+```
+/UtilityApp
+   /Scripts
+   /Reports
+   /Config
+   /Logs
+```
+
+---
+
+# 9. ⚠️ Non-Functional Requirements
+
+## 9.1 Reliability
+
+* Retry on email failure
+* Script timeout handling
+
+## 9.2 Logging
+
+* Execution logs
+* Error logs
+* Email status
+
+## 9.3 Performance
+
+* Parallel execution (future)
+* Efficient file handling
+
+---
+
+# 10. 🔐 Security Considerations
+
+* Store SMTP credentials in config (secured)
+* Avoid passing secrets via CLI
+* Restrict script execution paths
+
+---
+
+# 11. 🚀 Future Enhancements
+
+* Web dashboard
+* Report history storage
+* Alert-only mode (failures only)
+* Integration with Teams/Slack
+* Plugin-based architecture
+
+---
+
+# 12. 🏁 Final Recommendation
+
+### Adopt:
+
+✔ File-based HTML output
+✔ Script execution via .NET
+✔ Config-driven task mapping
+✔ Argument override capability
+✔ Task-based execution (`--task`)
+
+---
+
+## Final Architecture Summary
+
+```
+Scheduler → .NET Utility → Script → HTML File → Email
+```
+
+---
+
+## Key Benefits
+
+* ✅ Minimal changes to existing scripts
+* ✅ Centralized email management
+* ✅ Scalable and maintainable
+* ✅ Production-ready design
+
+---
