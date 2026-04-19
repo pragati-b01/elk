@@ -1,0 +1,235 @@
+using System.Diagnostics;
+using System.Text.Json;
+
+// ===================== CONFIG MODELS =====================
+public class AppConfig
+{
+    public SmtpConfig Smtp { get; set; }
+    public ExecutionConfig Execution { get; set; }
+    public Dictionary<string, TaskConfig> Tasks { get; set; }
+}
+
+public class SmtpConfig
+{
+    public string Server { get; set; }
+    public int Port { get; set; }
+    public string From { get; set; }
+}
+
+public class ExecutionConfig
+{
+    public int TimeoutSeconds { get; set; } = 60;
+    public int RetryCount { get; set; } = 3;
+}
+
+public class TaskConfig
+{
+    public string Script { get; set; }
+    public string OutputFolder { get; set; }
+    public string DefaultSubject { get; set; }
+    public string To { get; set; }
+}
+
+// ===================== LOGGER =====================
+public static class Logger
+{
+    private static readonly string LogFile = "Logs/app.log";
+    private static readonly string ErrorFile = "Logs/error.log";
+
+    public static void Info(string msg)
+    {
+        Write(LogFile, "INFO", msg);
+    }
+
+    public static void Error(string msg)
+    {
+        Write(ErrorFile, "ERROR", msg);
+    }
+
+    private static void Write(string file, string level, string msg)
+    {
+        Directory.CreateDirectory("Logs");
+        File.AppendAllText(file, $"{DateTime.Now} [{level}] {msg}\n");
+    }
+}
+
+// ===================== SCRIPT EXECUTOR =====================
+public static class ScriptExecutor
+{
+    public static string Execute(string scriptPath, int timeoutSeconds)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = "powershell.exe",
+            Arguments = $"-ExecutionPolicy Bypass -File \"{scriptPath}\"",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };
+
+        using var process = Process.Start(psi);
+
+        if (!process.WaitForExit(timeoutSeconds * 1000))
+        {
+            process.Kill();
+            throw new Exception("Script timeout");
+        }
+
+        if (process.ExitCode != 0)
+        {
+            throw new Exception(process.StandardError.ReadToEnd());
+        }
+
+        return process.StandardOutput.ReadToEnd().Trim();
+    }
+}
+
+// ===================== EMAIL SERVICE =====================
+public static class EmailService
+{
+    public static void Send(AppConfig config, string to, string subject, string html)
+    {
+        int retries = config.Execution.RetryCount;
+
+        while (retries-- > 0)
+        {
+            try
+            {
+                using var client = new System.Net.Mail.SmtpClient(config.Smtp.Server, config.Smtp.Port);
+
+                var mail = new System.Net.Mail.MailMessage(
+                    config.Smtp.From,
+                    to,
+                    subject,
+                    html
+                );
+
+                mail.IsBodyHtml = true;
+
+                client.Send(mail);
+
+                Logger.Info("Email sent successfully");
+                return;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Email failed: " + ex.Message);
+
+                if (retries == 0)
+                    throw;
+
+                Thread.Sleep(2000);
+            }
+        }
+    }
+}
+
+// ===================== FILE HELPER =====================
+public static class FileHelper
+{
+    public static string GetLatestFile(string folder)
+    {
+        if (!Directory.Exists(folder))
+            throw new Exception($"Folder not found: {folder}");
+
+        return Directory.GetFiles(folder, "*.html")
+            .OrderByDescending(File.GetLastWriteTime)
+            .FirstOrDefault();
+    }
+}
+
+// ===================== MAIN =====================
+class Program
+{
+    static void Main(string[] args)
+    {
+        try
+        {
+            Logger.Info("Application started");
+
+            var config = LoadConfig();
+
+            var argDict = ParseArgs(args);
+
+            if (!argDict.ContainsKey("task"))
+                throw new Exception("Missing --task argument");
+
+            string taskName = argDict["task"];
+
+            if (!config.Tasks.ContainsKey(taskName))
+                throw new Exception($"Task not found: {taskName}");
+
+            var task = config.Tasks[taskName];
+
+            Logger.Info($"Executing task: {taskName}");
+
+            string outputFile = null;
+
+            // Run script
+            if (!argDict.ContainsKey("bodyFile"))
+            {
+                outputFile = ScriptExecutor.Execute(task.Script, config.Execution.TimeoutSeconds);
+            }
+            else
+            {
+                outputFile = argDict["bodyFile"];
+            }
+
+            // Fallback to latest file
+            if (string.IsNullOrEmpty(outputFile))
+            {
+                outputFile = FileHelper.GetLatestFile(task.OutputFolder);
+            }
+
+            if (!File.Exists(outputFile))
+                throw new Exception($"Output file not found: {outputFile}");
+
+            Logger.Info($"Reading file: {outputFile}");
+
+            var html = File.ReadAllText(outputFile);
+
+            string subject = argDict.ContainsKey("subject")
+                ? argDict["subject"]
+                : task.DefaultSubject;
+
+            string to = argDict.ContainsKey("to")
+                ? argDict["to"]
+                : task.To;
+
+            EmailService.Send(config, to, subject, html);
+
+            Logger.Info("Task completed successfully");
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex.ToString());
+            Console.WriteLine("ERROR: " + ex.Message);
+        }
+    }
+
+    // ===================== CONFIG =====================
+    static AppConfig LoadConfig()
+    {
+        var json = File.ReadAllText("appsettings.json");
+        return JsonSerializer.Deserialize<AppConfig>(json);
+    }
+
+    // ===================== ARG PARSER =====================
+    static Dictionary<string, string> ParseArgs(string[] args)
+    {
+        var dict = new Dictionary<string, string>();
+
+        foreach (var arg in args)
+        {
+            if (arg.StartsWith("--"))
+            {
+                var parts = arg.Substring(2).Split('=');
+
+                if (parts.Length == 2)
+                    dict[parts[0]] = parts[1];
+            }
+        }
+
+        return dict;
+    }
+}
