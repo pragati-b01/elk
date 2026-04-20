@@ -1,24 +1,13 @@
-{
-  "Smtp": {
-    "Server": "smtp.company.com",
-    "Port": 25,
-    "From": "noreply@company.com"
-  },
-  "Execution": {
-    "TimeoutSeconds": 60,
-    "RetryCount": 3
-  },
-  "Tasks": {
-    "HealthCheck": {
-      "Script": "C:\\UnifiedUtility\\Scripts\\HealthCheck.ps1",
-      "OutputFolder": "C:\\UnifiedUtility\\Reports\\Health",
-      "DefaultSubject": "Health Report",
-      "To": "ops@company.com"
-    }
-  }
-}
+var recipients = to.Split(new[] { ';', ',' }, StringSplitOptions.RemoveEmptyEntries);
 
+foreach (var r in recipients)
+    mail.To.Add(r.Trim());
 -------------------
+
+string scriptPath = Path.Combine(rootPath, scriptRelative);
+string outputFolder = Path.Combine(rootPath, outputFolderRelative);
+
+MyUtility.exe --task=HealthCheck --to="a@x.com;b@y.com;c@z.com"
 
 MyUtility.exe --task=HealthCheck
 
