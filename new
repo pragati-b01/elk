@@ -1,0 +1,202 @@
+using System;
+using System.Collections.Generic;
+using System.Configuration;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using System.Net.Mail;
+using System.Threading;
+
+class Program
+{
+    static void Main(string[] args)
+    {
+        try
+        {
+            Logger.Info("Application started");
+
+            var argDict = ParseArgs(args);
+
+            if (!argDict.ContainsKey("task"))
+                throw new Exception("Missing --task argument");
+
+            string taskName = argDict["task"];
+
+            string scriptPath = GetConfig($"{taskName}.Script");
+            string outputFolder = GetConfig($"{taskName}.OutputFolder");
+            string subject = argDict.ContainsKey("subject") ? argDict["subject"] : GetConfig($"{taskName}.Subject");
+            string to = argDict.ContainsKey("to") ? argDict["to"] : GetConfig($"{taskName}.To");
+
+            int timeout = int.Parse(GetConfig("TimeoutSeconds"));
+            int retry = int.Parse(GetConfig("RetryCount"));
+
+            string outputFile = null;
+
+            if (argDict.ContainsKey("bodyFile"))
+            {
+                outputFile = argDict["bodyFile"];
+            }
+            else
+            {
+                Logger.Info("Executing script...");
+                outputFile = ScriptExecutor.Execute(scriptPath, timeout);
+            }
+
+            if (string.IsNullOrEmpty(outputFile))
+            {
+                Logger.Info("Fetching latest file...");
+                outputFile = FileHelper.GetLatestFile(outputFolder);
+            }
+
+            if (!File.Exists(outputFile))
+                throw new Exception("Output file not found: " + outputFile);
+
+            Logger.Info("Reading file: " + outputFile);
+            var html = File.ReadAllText(outputFile);
+
+            EmailService.Send(to, subject, html, retry);
+
+            Logger.Info("Completed successfully");
+        }
+        catch (Exception ex)
+        {
+            Logger.Error(ex.ToString());
+            Console.WriteLine("ERROR: " + ex.Message);
+        }
+    }
+
+    static string GetConfig(string key)
+    {
+        var value = ConfigurationManager.AppSettings[key];
+        if (string.IsNullOrEmpty(value))
+            throw new Exception("Missing config: " + key);
+        return value;
+    }
+
+    static Dictionary<string, string> ParseArgs(string[] args)
+    {
+        var dict = new Dictionary<string, string>();
+
+        foreach (var arg in args)
+        {
+            if (arg.StartsWith("--"))
+            {
+                var parts = arg.Substring(2).Split('=');
+                if (parts.Length == 2)
+                    dict[parts[0]] = parts[1];
+            }
+        }
+
+        return dict;
+    }
+}
+
+static class Logger
+{
+    static string log = "Logs/app.log";
+    static string err = "Logs/error.log";
+
+    public static void Info(string msg) => Write(log, "INFO", msg);
+    public static void Error(string msg) => Write(err, "ERROR", msg);
+
+    static void Write(string file, string level, string msg)
+    {
+        Directory.CreateDirectory("Logs");
+        File.AppendAllText(file, $"{DateTime.Now} [{level}] {msg}\n");
+    }
+}
+
+static class ScriptExecutor
+{
+    public static string Execute(string scriptPath, int timeoutSeconds)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = "powershell.exe",
+            Arguments = $"-ExecutionPolicy Bypass -File \"{scriptPath}\"",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };
+
+        using var process = Process.Start(psi);
+
+        if (!process.WaitForExit(timeoutSeconds * 1000))
+        {
+            process.Kill();
+            throw new Exception("Script timeout");
+        }
+
+        if (process.ExitCode != 0)
+            throw new Exception(process.StandardError.ReadToEnd());
+
+        return process.StandardOutput.ReadToEnd().Trim();
+    }
+}
+
+static class EmailService
+{
+    public static void Send(string to, string subject, string html, int retry)
+    {
+        string server = ConfigurationManager.AppSettings["SmtpServer"];
+        int port = int.Parse(ConfigurationManager.AppSettings["SmtpPort"]);
+        string from = ConfigurationManager.AppSettings["FromEmail"];
+
+        while (retry-- > 0)
+        {
+            try
+            {
+                using var client = new SmtpClient(server, port);
+                var mail = new MailMessage(from, to, subject, html);
+                mail.IsBodyHtml = true;
+
+                client.Send(mail);
+                Logger.Info("Email sent");
+                return;
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Email failed: " + ex.Message);
+                if (retry == 0) throw;
+                Thread.Sleep(2000);
+            }
+        }
+    }
+}
+
+static class FileHelper
+{
+    public static string GetLatestFile(string folder)
+    {
+        if (!Directory.Exists(folder))
+            throw new Exception("Folder not found: " + folder);
+
+        return Directory.GetFiles(folder, "*.html")
+            .OrderByDescending(File.GetLastWriteTime)
+            .FirstOrDefault();
+    }
+}
+
+
+-
+<configuration>
+  <appSettings>
+
+    <add key="SmtpServer" value="smtp.company.com"/>
+    <add key="SmtpPort" value="25"/>
+    <add key="FromEmail" value="noreply@company.com"/>
+
+    <add key="TimeoutSeconds" value="60"/>
+    <add key="RetryCount" value="3"/>
+
+    <add key="HealthCheck.Script" value="C:\UnifiedUtility\Scripts\HealthCheck.ps1"/>
+    <add key="HealthCheck.OutputFolder" value="C:\UnifiedUtility\Reports\Health"/>
+    <add key="HealthCheck.Subject" value="Health Report"/>
+    <add key="HealthCheck.To" value="ops@company.com"/>
+
+  </appSettings>
+</configuration>
+--------------------
+
+--
+UnifiedUtility.exe --task=HealthCheck
