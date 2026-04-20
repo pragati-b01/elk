@@ -1,28 +1,26 @@
-param(
-    [Parameter(ValueFromRemainingArguments = $true)]
-    [string[]]$AllArgs
-)
-
-# Output folder
+# Create output folder
 $folder = "C:\UnifiedUtility\Reports\Test"
 
 if (!(Test-Path $folder)) {
     New-Item -ItemType Directory -Path $folder | Out-Null
 }
 
-# File path
-$file = "$folder\args_$(Get-Date -Format yyyyMMddHHmmss).html"
+# Output file
+$file = "$folder\test_$(Get-Date -Format yyyyMMddHHmmss).html"
+
+# Capture ALL raw arguments (works even if none passed)
+$argsList = $args
 
 # Build HTML
 $html = "<html><body>"
-$html += "<h2>Argument Test Output</h2>"
+$html += "<h2>Simple Argument Test</h2>"
 
-if ($AllArgs.Count -eq 0) {
-    $html += "<p>No arguments passed</p>"
+if ($argsList.Count -eq 0) {
+    $html += "<p>No arguments received</p>"
 } else {
     $i = 1
-    foreach ($arg in $AllArgs) {
-        $html += "<p><b>Arg $i:</b> $arg</p>"
+    foreach ($a in $argsList) {
+        $html += "<p>Arg $i: $a</p>"
         $i++
     }
 }
@@ -32,13 +30,13 @@ $html += "</body></html>"
 # Write file
 $html | Out-File $file
 
-# Also print to console (for debugging)
+# Print to console also
 Write-Output "Arguments received:"
 $i = 1
-foreach ($arg in $AllArgs) {
-    Write-Output "Arg $i: $arg"
+foreach ($a in $argsList) {
+    Write-Output "Arg $i: $a"
     $i++
 }
 
-# Return file path (IMPORTANT for your EXE)
+# IMPORTANT: return file path for your EXE
 Write-Output $file
