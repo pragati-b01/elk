@@ -423,3 +423,27 @@ Scheduler → .NET Utility → Script → HTML File → Email
 * ✅ Production-ready design
 
 ---
+TASK = defines WHAT to run
+
+ARGS = controls HOW script runs
+
+CONFIG = defines DEFAULT behavior
+
+OVERRIDES = runtime flexibility
+
+| Argument     | Purpose                 |
+| ------------ | ----------------------- |
+| `--task`     | selects script + config |
+| `--args`     | passed to PowerShell    |
+| `--subject`  | email override          |
+| `--to`       | recipient override      |
+| `--bodyFile` | skip execution          |
+
+debu:MyUtility.exe --task=HealthCheck --bodyFile="C:\temp\test.html"
+minimal run: MyUtility.exe --task=HealthCheck
+full control:
+MyUtility.exe ^
+--task=HealthCheck ^
+--args="-server prod01 -region US" ^
+--subject="Daily Health Report" ^
+--to="ops@company.com"
