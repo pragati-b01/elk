@@ -1,0 +1,128 @@
+SendEncryptedEmailApp – Functional & Technical Overview
+1. Purpose
+The SendEncryptedEmailApp is a command-line utility used to send encrypted emails with configurable inputs. It enables secure, automated email delivery using file-based content and flexible recipient handling.
+
+This tool is intended for system-generated notifications, reports, and secure communications.
+
+2. Key Capabilities
+Send encrypted emails via command line
+
+Support multiple recipients
+
+Accept HTML body content from a file
+
+Allow optional SMTP configuration
+
+Enable automation via batch scripts or schedulers
+
+3. Command Syntax
+SendEncryptedEmailApp.exe [parameters]
+
+4. Parameters
+Parameter	Required	Description
+--from	Yes	Sender email address
+--to	Yes	Recipient email address(es), comma-separated
+--subject	Yes	Email subject line
+--body	Yes	File path to HTML content
+--SMTPServer	No	SMTP server hostname
+--Port	No	SMTP server port
+5. Example Usage
+Basic Email
+SendEncryptedEmailApp.exe
+--from="noreply@testdomain.com"
+--to="user1@testdomain.com"
+--subject="Daily Report"
+--body="C:\temp\report.html"
+
+Multiple Recipients
+SendEncryptedEmailApp.exe
+--from="noreply@testdomain.com"
+--to="user1@testdomain.com,user2@testdomain.com"
+--subject="Daily Report"
+--body="C:\temp\report.html"
+
+With SMTP Configuration
+SendEncryptedEmailApp.exe
+--from="noreply@testdomain.com"
+--to="user1@testdomain.com"
+--subject="Daily Report"
+--body="C:\temp\report.html"
+--SMTPServer="windowsmail.mail.com"
+--Port="25"
+
+Full Example (Production)
+SendEncryptedEmailApp.exe
+--from="noreply@testdomain.com"
+--to="user1@testdomain.com"
+--subject="LicCount Report on 04/22/2026"
+--body="D:\SendEncryptedEmailApp\HealthCheck\HealthCheckReport.html"
+--SMTPServer="windowsmail.hhsc.texas.gov"
+--Port="25"
+
+6. Input Requirements
+All required parameters (from, to, subject, body) must be provided
+
+Body file must exist and be accessible
+
+Email addresses must be properly formatted
+
+SMTP server must be reachable if specified
+
+Port must be valid and open (if specified)
+
+7. Error Handling (Expected Behavior)
+The application should validate:
+
+Missing required parameters
+
+Invalid or inaccessible file paths
+
+Incorrect email formats
+
+SMTP connectivity issues
+
+Recommended outputs:
+
+Clear console error messages
+
+Exit codes for automation tracking
+
+8. Security Considerations
+Emails are encrypted before sending
+
+Avoid storing sensitive data in plain text files
+
+Restrict access to execution environment
+
+Ensure SMTP servers are trusted and secure
+
+9. Deployment & Usage
+Can be executed via:
+
+Windows Task Scheduler
+
+Batch scripts (.bat)
+
+Automation pipelines
+
+Designed for Windows environments with SMTP access
+
+10. Business Value
+Automates secure email delivery
+
+Reduces manual effort and errors
+
+Standardizes report distribution
+
+Supports compliance and secure communication practices
+
+11. Potential Enhancements
+SMTP authentication (username/password)
+
+Attachment support beyond body file
+
+Logging to file (audit trail)
+
+Retry mechanism for failures
+
+Configuration file support instead of CLI-only
