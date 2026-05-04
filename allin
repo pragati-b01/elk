@@ -1,235 +1,141 @@
-using System.Diagnostics;
-using System.Text.Json;
+Yes — all the examples you showed are encrypted in transit (because they use TLS/HTTPS).
+The differences (SMTP, ESMTP, MAPI, HTTPS) are about how the email is sent or accessed, not whether it’s secure.
 
-// ===================== CONFIG MODELS =====================
-public class AppConfig
-{
-    public SmtpConfig Smtp { get; set; }
-    public ExecutionConfig Execution { get; set; }
-    public Dictionary<string, TaskConfig> Tasks { get; set; }
-}
+Now let’s turn this into something you can confidently present.
 
-public class SmtpConfig
-{
-    public string Server { get; set; }
-    public int Port { get; set; }
-    public string From { get; set; }
-}
+🧾 Executive Summary (for leaders)
+All observed email flows use modern encryption (TLS 1.2 / TLS 1.3)
+Encryption is applied during transmission between systems
+Different “types” (SMTP, ESMTP, MAPI, HTTPS) represent different communication methods, not security gaps
+Some messages show “Transport Decrypted”, meaning:
+Email was temporarily decrypted for security inspection (e.g., malware scanning, DLP)
+Then re-encrypted before continuing
+No evidence of unencrypted transmission
+🔐 1. Are all of these encrypted?
+✅ YES — based on your headers:
+TLS1.2 or TLS1.3 present → encrypted
+HTTPS → encrypted
+Modern Outlook (MAPI over HTTP) → encrypted
 
-public class ExecutionConfig
-{
-    public int TimeoutSeconds { get; set; } = 60;
-    public int RetryCount { get; set; } = 3;
-}
+👉 So:
 
-public class TaskConfig
-{
-    public string Script { get; set; }
-    public string OutputFolder { get; set; }
-    public string DefaultSubject { get; set; }
-    public string To { get; set; }
-}
+All email transmissions shown are protected in transit
 
-// ===================== LOGGER =====================
-public static class Logger
-{
-    private static readonly string LogFile = "Logs/app.log";
-    private static readonly string ErrorFile = "Logs/error.log";
+🔄 2. Why are there different “Types”?
 
-    public static void Info(string msg)
-    {
-        Write(LogFile, "INFO", msg);
-    }
+These are different protocols / access methods, not different security levels.
 
-    public static void Error(string msg)
-    {
-        Write(ErrorFile, "ERROR", msg);
-    }
+📧 SMTP / ESMTP (Server-to-Server sending)
+SMTP = basic email sending protocol
+ESMTP = enhanced version (adds features like TLS)
 
-    private static void Write(string file, string level, string msg)
-    {
-        Directory.CreateDirectory("Logs");
-        File.AppendAllText(file, $"{DateTime.Now} [{level}] {msg}\n");
-    }
-}
+✔️ Used when:
 
-// ===================== SCRIPT EXECUTOR =====================
-public static class ScriptExecutor
-{
-    public static string Execute(string scriptPath, int timeoutSeconds)
-    {
-        var psi = new ProcessStartInfo
-        {
-            FileName = "powershell.exe",
-            Arguments = $"-ExecutionPolicy Bypass -File \"{scriptPath}\"",
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false
-        };
+App sends email (PowerShell, .NET, services)
+Mail server relays to another server
 
-        using var process = Process.Start(psi);
+✔️ Security:
 
-        if (!process.WaitForExit(timeoutSeconds * 1000))
-        {
-            process.Kill();
-            throw new Exception("Script timeout");
-        }
+Uses TLS → encrypted
+🌐 HTTPS (Web-based access)
 
-        if (process.ExitCode != 0)
-        {
-            throw new Exception(process.StandardError.ReadToEnd());
-        }
+✔️ Used when:
 
-        return process.StandardOutput.ReadToEnd().Trim();
-    }
-}
+Outlook Web (browser)
+APIs / cloud services
 
-// ===================== EMAIL SERVICE =====================
-public static class EmailService
-{
-    public static void Send(AppConfig config, string to, string subject, string html)
-    {
-        int retries = config.Execution.RetryCount;
+✔️ Security:
 
-        while (retries-- > 0)
-        {
-            try
-            {
-                using var client = new System.Net.Mail.SmtpClient(config.Smtp.Server, config.Smtp.Port);
+Always encrypted (HTTPS = TLS)
+📮 MAPI (Outlook client access)
 
-                var mail = new System.Net.Mail.MailMessage(
-                    config.Smtp.From,
-                    to,
-                    subject,
-                    html
-                );
+✔️ Used when:
 
-                mail.IsBodyHtml = true;
+Outlook desktop connects to Exchange
 
-                client.Send(mail);
+✔️ Modern behavior:
 
-                Logger.Info("Email sent successfully");
-                return;
-            }
-            catch (Exception ex)
-            {
-                Logger.Error("Email failed: " + ex.Message);
+Uses MAPI over HTTP (HTTPS underneath)
 
-                if (retries == 0)
-                    throw;
+✔️ Security:
 
-                Thread.Sleep(2000);
-            }
-        }
-    }
-}
+Encrypted
+⚠️ 3. What is “Transport Decrypted”?
 
-// ===================== FILE HELPER =====================
-public static class FileHelper
-{
-    public static string GetLatestFile(string folder)
-    {
-        if (!Directory.Exists(folder))
-            throw new Exception($"Folder not found: {folder}");
+This is the only thing leaders usually question.
 
-        return Directory.GetFiles(folder, "*.html")
-            .OrderByDescending(File.GetLastWriteTime)
-            .FirstOrDefault();
-    }
-}
+What it means:
+Email was:
+Encrypted during transit ✅
+Decrypted inside a trusted system ⚠️
+Inspected (security/compliance)
+Re-encrypted before sending onward ✅
+Why it happens:
+Anti-malware scanning
+Data Loss Prevention (DLP)
+Compliance rules (Microsoft 365, Exchange)
 
-// ===================== MAIN =====================
-class Program
-{
-    static void Main(string[] args)
-    {
-        try
-        {
-            Logger.Info("Application started");
+👉 Important:
 
-            var config = LoadConfig();
+This is expected enterprise behavior, not a security failure.
 
-            var argDict = ParseArgs(args);
+🧠 4. Why rows differ between emails
 
-            if (!argDict.ContainsKey("task"))
-                throw new Exception("Missing --task argument");
+Each row = one step in the journey
 
-            string taskName = argDict["task"];
+Differences come from:
 
-            if (!config.Tasks.ContainsKey(taskName))
-                throw new Exception($"Task not found: {taskName}");
+Different sending apps (PowerShell vs .NET vs Outlook)
+Different routes (internal vs external)
+Different security checks applied
+Different client access methods
+🏗️ 5. How your environment affects this
 
-            var task = config.Tasks[taskName];
+You mentioned:
 
-            Logger.Info($"Executing task: {taskName}");
+PowerShell scripts
+.NET applications
+Different servers
+Outlook clients
 
-            string outputFile = null;
+👉 Yes, this explains the variation:
 
-            // Run script
-            if (!argDict.ContainsKey("bodyFile"))
-            {
-                outputFile = ScriptExecutor.Execute(task.Script, config.Execution.TimeoutSeconds);
-            }
-            else
-            {
-                outputFile = argDict["bodyFile"];
-            }
+Source	Likely Protocol
+PowerShell SMTP script	SMTP / ESMTP
+.NET app (SmtpClient, MailKit)	SMTP / ESMTP
+Outlook Desktop	MAPI
+Outlook Web	HTTPS
+🔐 6. Security comparison (simple)
+Type	Encrypted?	Purpose
+SMTP (with TLS)	✅ Yes	Send email between servers/apps
+ESMTP (with TLS)	✅ Yes	Enhanced SMTP
+HTTPS	✅ Yes	Web access
+MAPI (modern)	✅ Yes	Outlook client
+Transport Decrypted	⚠️ Temporarily decrypted	Security inspection
+🚨 7. Important clarification (avoid confusion)
 
-            // Fallback to latest file
-            if (string.IsNullOrEmpty(outputFile))
-            {
-                outputFile = FileHelper.GetLatestFile(task.OutputFolder);
-            }
+Even though everything is encrypted:
 
-            if (!File.Exists(outputFile))
-                throw new Exception($"Output file not found: {outputFile}");
+This is NOT end-to-end encryption (E2EE)
 
-            Logger.Info($"Reading file: {outputFile}");
+Meaning:
 
-            var html = File.ReadAllText(outputFile);
+Systems like Microsoft 365 can read email content for:
+Security
+Compliance
 
-            string subject = argDict.ContainsKey("subject")
-                ? argDict["subject"]
-                : task.DefaultSubject;
+If leadership asks:
 
-            string to = argDict.ContainsKey("to")
-                ? argDict["to"]
-                : task.To;
+True E2EE = S/MIME or Microsoft Purview Message Encryption
+Your logs = standard enterprise transport encryption
+📊 8. Final conclusion (ready to present)
 
-            EmailService.Send(config, to, subject, html);
+You can present this:
 
-            Logger.Info("Task completed successfully");
-        }
-        catch (Exception ex)
-        {
-            Logger.Error(ex.ToString());
-            Console.WriteLine("ERROR: " + ex.Message);
-        }
-    }
+All analyzed email headers confirm that:
 
-    // ===================== CONFIG =====================
-    static AppConfig LoadConfig()
-    {
-        var json = File.ReadAllText("appsettings.json");
-        return JsonSerializer.Deserialize<AppConfig>(json);
-    }
-
-    // ===================== ARG PARSER =====================
-    static Dictionary<string, string> ParseArgs(string[] args)
-    {
-        var dict = new Dictionary<string, string>();
-
-        foreach (var arg in args)
-        {
-            if (arg.StartsWith("--"))
-            {
-                var parts = arg.Substring(2).Split('=');
-
-                if (parts.Length == 2)
-                    dict[parts[0]] = parts[1];
-            }
-        }
-
-        return dict;
-    }
-}
+Emails are encrypted during transmission using TLS 1.2/1.3
+Multiple protocols (SMTP, ESMTP, MAPI, HTTPS) are used depending on the source and access method
+Some emails undergo controlled decryption within trusted systems for security inspection (“Transport Decrypted”)
+No unencrypted transmission paths were observed
+The variations are expected in a mixed environment (PowerShell, .NET apps, Outlook clients)
