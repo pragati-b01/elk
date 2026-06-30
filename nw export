@@ -1,0 +1,56 @@
+param(
+[ValidateSet('Prod','Test','Regression')][string]$Environment='Test',
+[string]$Index='portalweb-*',
+[datetime]$StartDate,
+[datetime]$EndDate,
+[string]$OutputFile='Export.csv',
+[int]$BatchSize=5000
+)
+
+$Hosts=@{
+ Prod='http://prod-elastic:9200'
+ Test='http://test-elastic:9200'
+ Regression='http://regr-elastic:9200'
+}
+$ElasticHost=$Hosts[$Environment]
+$searchAfter=$null
+$first=$true
+$total=0
+
+do{
+ $body=@{
+   size=$BatchSize
+   track_total_hits=$true
+   sort=@(
+     @{'@timestamp'=@{order='asc';format='strict_date_optional_time_nanos'}},
+     @{_id=@{order='asc'}}
+   )
+   fields=@(@{field='*';include_unmapped=$true})
+   _source=$false
+   query=@{
+     range=@{
+       '@timestamp'=@{
+         gte=$StartDate.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+         lte=$EndDate.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+       }
+     }
+   }
+ }
+ if($searchAfter){$body.search_after=$searchAfter}
+ $resp=Invoke-RestMethod -Method Post -Uri "$ElasticHost/$Index/_search" -Body ($body|ConvertTo-Json -Depth 20) -ContentType 'application/json'
+ $hits=$resp.hits.hits
+ if(!$hits -or $hits.Count -eq 0){break}
+ $rows=foreach($h in $hits){
+   $r=[ordered]@{}
+   foreach($p in $h.fields.PSObject.Properties){
+     if($p.Value -is [array]){$r[$p.Name]=$p.Value -join ';'}else{$r[$p.Name]=$p.Value}
+   }
+   [pscustomobject]$r
+ }
+ if($first){$rows|Export-Csv $OutputFile -NoTypeInformation;$first=$false}else{$rows|Export-Csv $OutputFile -NoTypeInformation -Append}
+ $total+=$hits.Count
+ Write-Progress -Activity 'Exporting' -Status "$total rows exported"
+ $searchAfter=$hits[-1].sort
+}while($true)
+
+Write-Host "Completed. Exported $total rows to $OutputFile"
