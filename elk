@@ -1,0 +1,192 @@
+program.cs
+
+using System;
+using System.Globalization;
+using System.Threading.Tasks;
+
+class Program
+{
+    static async Task Main(string[] args)
+    {
+        if (args.Length < 2)
+        {
+            Console.WriteLine("Usage: app <startDate> <endDate>");
+            return;
+        }
+
+        var start = DateTime.Parse(args[0], null, DateTimeStyles.AdjustToUniversal);
+        var end = DateTime.Parse(args[1], null, DateTimeStyles.AdjustToUniversal);
+
+        string elasticUrl = "http://localhost:9200";
+        string index = "your-index-name";
+
+        var service = new ElasticHttpService(elasticUrl, index);
+        var exporter = new CsvExporter();
+
+        string file = $"elk_export_{DateTime.UtcNow:yyyyMMdd_HHmmss}.csv";
+
+        Console.WriteLine("Starting export...");
+
+        await foreach (var record in service.FetchAllAsync(start, end))
+        {
+            exporter.Write(record, file);
+        }
+
+        Console.WriteLine($"Done -> {file}");
+    }
+}
+
+
+ElasticHttpService.cs
+
+
+using System;
+using System.Collections.Generic;
+using System.Net.Http;
+using System.Text;
+using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
+
+public class ElasticHttpService
+{
+    private readonly HttpClient _client;
+    private readonly string _index;
+
+    public ElasticHttpService(string baseUrl, string index)
+    {
+        _client = new HttpClient
+        {
+            BaseAddress = new Uri(baseUrl)
+        };
+        _index = index;
+    }
+
+    public async IAsyncEnumerable<ElasticHit> FetchAllAsync(
+        DateTime start,
+        DateTime end,
+        CancellationToken ct = default)
+    {
+        object?[]? searchAfter = null;
+        int size = 1000;
+
+        while (true)
+        {
+            var query = BuildQuery(start, end, size, searchAfter);
+
+            var response = await _client.PostAsync(
+                $"/{_index}/_search",
+                new StringContent(query, Encoding.UTF8, "application/json"),
+                ct
+            );
+
+            var json = await response.Content.ReadAsStringAsync();
+
+            using var doc = JsonDocument.Parse(json);
+
+            var hits = doc.RootElement
+                .GetProperty("hits")
+                .GetProperty("hits");
+
+            if (hits.GetArrayLength() == 0)
+                yield break;
+
+            JsonElement lastHit = default;
+
+            foreach (var hit in hits.EnumerateArray())
+            {
+                lastHit = hit;
+
+                yield return new ElasticHit
+                {
+                    Id = hit.GetProperty("_id").GetString(),
+                    Source = hit.GetProperty("_source").ToString()
+                };
+            }
+
+            // search_after uses ONLY sort values
+            if (!lastHit.TryGetProperty("sort", out var sortArray))
+                yield break;
+
+            searchAfter = new object[sortArray.GetArrayLength()];
+
+            for (int i = 0; i < sortArray.GetArrayLength(); i++)
+            {
+                searchAfter[i] = sortArray[i].ToString();
+            }
+
+            Console.WriteLine($"Fetched batch...");
+        }
+    }
+
+    private string BuildQuery(DateTime start, DateTime end, int size, object[]? searchAfter)
+    {
+        var sb = new StringBuilder();
+
+        sb.Append("{");
+        sb.Append("\"size\":").Append(size).Append(",");
+
+        sb.Append("\"sort\":[");
+        sb.Append("{\"timestamp\":{\"order\":\"asc\"}}");
+        sb.Append("],");
+
+        if (searchAfter != null)
+        {
+            sb.Append("\"search_after\":")
+              .Append(JsonSerializer.Serialize(searchAfter))
+              .Append(",");
+        }
+
+        sb.Append("\"query\":{");
+        sb.Append("\"bool\":{");
+        sb.Append("\"filter\":[");
+        sb.Append("{\"range\":{\"timestamp\":{");
+        sb.Append("\"gte\":\"").Append(start.ToString("o")).Append("\",");
+        sb.Append("\"lte\":\"").Append(end.ToString("o")).Append("\"");
+        sb.Append("}}}");
+        sb.Append("]");
+        sb.Append("}}");
+
+        sb.Append("}");
+
+        return sb.ToString();
+    }
+}
+
+
+CsvExporter.cs
+
+using System.Globalization;
+using System.IO;
+
+public class CsvExporter
+{
+    private bool _headerWritten = false;
+
+    public void Write(ElasticHit record, string filePath)
+    {
+        using var stream = new FileStream(filePath, FileMode.Append, FileAccess.Write);
+        using var writer = new StreamWriter(stream);
+
+        if (!_headerWritten)
+        {
+            writer.WriteLine("Id,Source");
+            _headerWritten = true;
+        }
+
+        writer.WriteLine($"\"{record.Id}\",\"{Escape(record.Source)}\"");
+    }
+
+    private string Escape(string input)
+    {
+        return input?.Replace("\"", "\"\"") ?? "";
+    }
+}
+
+ElasticHit.cs
+
+public class ElasticHit
+{
+    public string Id { get; set; }
+    public string Source { get; set; }
+}
