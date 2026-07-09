@@ -1,121 +1,54 @@
-param(
-    [ValidateSet("Prod","Test","Regression")]
-    [string]$Environment,
+$ElasticHost = "http://your-elastic-server:9200"
+$Index = "iis-*"
 
-    [datetime]$StartDate,
-
-    [datetime]$EndDate,
-
-    [string]$OutputFile = ".\PortalLogs.csv"
-)
-
-# Environment Configuration
-$ElasticHosts = @{
-    Prod       = "http://prod-elastic:9200"
-    Test       = "http://test-elastic:9200"
-    Regression = "http://regr-elastic:9200"
-}
-
-$ElasticHost = $ElasticHosts[$Environment]
-
-$body = @{
-    size = 2000
-
-    sort = @(
-        @{
-            "@timestamp" = @{
-                order = "desc"
+$body = @"
+{
+  "size": 0,
+  "query": {
+    "bool": {
+      "must": [
+        {
+          "range": {
+            "@timestamp": {
+              "gte": "2026-07-09T00:00:00",
+              "lte": "2026-07-09T23:59:59"
             }
+          }
+        },
+        {
+          "wildcard": {
+            "uri_target.keyword": "*PEMS*"
+          }
         }
-    )
-
-    fields = @(
-        @{
-            field = "*"
-            include_unmapped = $true
-        }
-    )
-
-    _source = $false
-
-    version = $true
-
-    query = @{
-        bool = @{
-            filter = @(
-                @{
-                    range = @{
-                        "@timestamp" = @{
-                            gte = $StartDate.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
-                            lte = $EndDate.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
-                        }
-                    }
-                }
-            )
-        }
+      ]
     }
-} | ConvertTo-Json -Depth 20
-
-$uri = "$ElasticHost/portalweb-*/_async_search?wait_for_completion_timeout=5s&keep_alive=1m"
+  },
+  "aggs": {
+    "client_ips": {
+      "terms": {
+        "field": "clientip",
+        "size": 10000,
+        "order": {
+          "_count": "desc"
+        }
+      }
+    }
+  }
+}
+"@
 
 $response = Invoke-RestMethod `
+    -Uri "$ElasticHost/$Index/_search" `
     -Method Post `
-    -Uri $uri `
     -Body $body `
     -ContentType "application/json"
 
-$hits = $response.response.hits.hits
-
-$rows = foreach($hit in $hits)
+$results = foreach($bucket in $response.aggregations.client_ips.buckets)
 {
-    $row = @{}
-
-    foreach($property in $hit.fields.PSObject.Properties)
-    {
-        $value = $property.Value
-
-        if($value -is [array])
-        {
-            $row[$property.Name] = $value -join ";"
-        }
-        else
-        {
-            $row[$property.Name] = $value
-        }
-    }
-
-    [PSCustomObject]$row
-}
-
-$rows | Export-Csv $OutputFile -NoTypeInformation
-
-
-
------
-.\Export-ElkDiscover.ps1 `
-    -Environment Prod `
-    -Index "portalweb-*" `
-    -StartDate "2026-05-15 00:00" `
-    -EndDate "2026-05-26 00:00" `
-    -OutputFile ".\PortalExport.csv"
-
----------
-$row=@{}
-
-foreach($property in $hit.fields.PSObject.Properties)
-{
-    $name=$property.Name
-
-    $value=$property.Value
-
-    if($value -is [System.Array])
-    {
-        $row[$name]=$value -join ";"
-    }
-    else
-    {
-        $row[$name]=$value
+    [PSCustomObject]@{
+        ClientIP = $bucket.key
+        Requests = $bucket.doc_count
     }
 }
 
-[PSCustomObject]$row
+$results | Format-Table -AutoSize
