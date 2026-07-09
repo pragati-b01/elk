@@ -1,54 +1,206 @@
-$ElasticHost = "http://your-elastic-server:9200"
-$Index = "iis-*"
+# ==============================
+# ELK Async Search - Client IP Report
+# ==============================
 
-$body = @"
-{
-  "size": 0,
-  "query": {
-    "bool": {
-      "must": [
-        {
-          "range": {
-            "@timestamp": {
-              "gte": "2026-07-09T00:00:00",
-              "lte": "2026-07-09T23:59:59"
+# Configuration
+$ElasticUrl = "http://your-elastic-server:9200"
+$Index = "Lis-*"
+
+$StartDate = "2026-07-09T05:00:00.000Z"
+$EndDate   = "2026-07-10T04:59:59.999Z"
+
+$SearchText = "pems"
+$HostName = "secure.tmhp.com"
+
+$TopIPs = 10000
+$TopHosts = 5
+
+
+# ==============================
+# Build Async Search Query
+# ==============================
+
+$query = @{
+    size = 0
+
+    aggs = @{
+        client_ips = @{
+            terms = @{
+                field = "clientip.keyword"
+                size = $TopIPs
+                shard_size = ($TopIPs * 2)
+                order = @{
+                    _count = "desc"
+                }
             }
-          }
-        },
-        {
-          "wildcard": {
-            "uri_target.keyword": "*PEMS*"
-          }
+
+            aggs = @{
+                hosts = @{
+                    terms = @{
+                        field = "cs-host.keyword"
+                        size = $TopHosts
+                        shard_size = 25
+                        order = @{
+                            _count = "desc"
+                        }
+                    }
+                }
+            }
         }
-      ]
     }
-  },
-  "aggs": {
-    "client_ips": {
-      "terms": {
-        "field": "clientip",
-        "size": 10000,
-        "order": {
-          "_count": "desc"
+
+
+    _source = @{
+        excludes = @()
+    }
+
+
+    query = @{
+        bool = @{
+            must = @()
+
+            filter = @(
+                
+                @{
+                    multi_match = @{
+                        query = $SearchText
+                        type = "best_fields"
+                        lenient = $true
+                    }
+                },
+
+                @{
+                    match_phrase = @{
+                        "cs-host" = $HostName
+                    }
+                },
+
+                @{
+                    range = @{
+                        "@timestamp" = @{
+                            format = "strict_date_optional_time"
+                            gte = $StartDate
+                            lte = $EndDate
+                        }
+                    }
+                }
+            )
+
+            should = @()
+            must_not = @()
         }
-      }
     }
-  }
-}
-"@
+
+} | ConvertTo-Json -Depth 50
+
+
+# Save request for debugging
+$query | Out-File ".\async_request.json" -Encoding utf8
+
+
+# ==============================
+# Submit Async Search
+# ==============================
+
+$AsyncUrl = "$ElasticUrl/$Index/_async_search" +
+"?batched_reduce_size=64" +
+"&ccs_minimize_roundtrips=true" +
+"&wait_for_completion_timeout=200ms" +
+"&keep_on_completion=true" +
+"&keep_alive=60000ms" +
+"&ignore_unavailable=true"
+
+
+Write-Host "Submitting async search..."
 
 $response = Invoke-RestMethod `
-    -Uri "$ElasticHost/$Index/_search" `
+    -Uri $AsyncUrl `
     -Method Post `
-    -Body $body `
-    -ContentType "application/json"
+    -ContentType "application/json" `
+    -Body $query
 
-$results = foreach($bucket in $response.aggregations.client_ips.buckets)
+
+# ==============================
+# Get Result
+# ==============================
+
+$result = $null
+
+
+if ($response.id)
 {
-    [PSCustomObject]@{
-        ClientIP = $bucket.key
-        Requests = $bucket.doc_count
+    Write-Host "Async ID: $($response.id)"
+
+    $AsyncId = $response.id
+
+    do
+    {
+        Start-Sleep -Milliseconds 500
+
+        $result = Invoke-RestMethod `
+            -Uri "$ElasticUrl/_async_search/$AsyncId" `
+            -Method Get
+
+        Write-Host "Running: $($result.is_running)"
+
     }
+    while ($result.is_running -eq $true)
+
+}
+else
+{
+    $result = $response
 }
 
-$results | Format-Table -AutoSize
+
+# ==============================
+# Extract Aggregation Result
+# ==============================
+
+$rows = @()
+
+
+$buckets = $result.response.aggregations.client_ips.buckets
+
+
+foreach($ip in $buckets)
+{
+
+    if($ip.hosts.buckets.Count -gt 0)
+    {
+        foreach($host in $ip.hosts.buckets)
+        {
+            $rows += [PSCustomObject]@{
+                ClientIP = $ip.key
+                Requests = $ip.doc_count
+                Host = $host.key
+                HostRequests = $host.doc_count
+            }
+        }
+    }
+    else
+    {
+        $rows += [PSCustomObject]@{
+            ClientIP = $ip.key
+            Requests = $ip.doc_count
+            Host = ""
+            HostRequests = ""
+        }
+    }
+
+}
+
+
+# ==============================
+# Output
+# ==============================
+
+$rows | Format-Table -AutoSize
+
+$rows | Export-Csv `
+    ".\ClientIP_Report.csv" `
+    -NoTypeInformation
+
+
+Write-Host "Completed"
+Write-Host "Total IPs: $($rows.ClientIP.Count)"
