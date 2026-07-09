@@ -1,77 +1,77 @@
-# ==============================
-# ELK Async Search - Client IP Report
-# ==============================
+# ==========================================
+# ELK Async Search - Dynamic Filter Count
+# ==========================================
 
-# Configuration
 $ElasticUrl = "http://your-elastic-server:9200"
 $Index = "Lis-*"
 
+
+# Date Range
 $StartDate = "2026-07-09T05:00:00.000Z"
 $EndDate   = "2026-07-10T04:59:59.999Z"
 
-$SearchText = "pems"
-$HostName = "secure.tmhp.com"
 
-$TopIPs = 10000
-$TopHosts = 5
+# ================================
+# Get User Input
+# ================================
+
+Write-Host ""
+Write-Host "Select Filter Type"
+Write-Host "1. Host"
+Write-Host "2. ClientIP"
+Write-Host "3. Status"
+Write-Host "4. Username"
+
+$choice = Read-Host "Enter option"
 
 
-# ==============================
-# Build Async Search Query
-# ==============================
+switch($choice)
+{
+    "1" {
+        $FilterType = "Host"
+        $Field = "cs-host.keyword"
+    }
 
-$query = @{
+    "2" {
+        $FilterType = "ClientIP"
+        $Field = "clientip.keyword"
+    }
+
+    "3" {
+        $FilterType = "Status"
+        $Field = "status.keyword"
+    }
+
+    "4" {
+        $FilterType = "Username"
+        $Field = "username.keyword"
+    }
+
+    default {
+        Write-Host "Invalid selection"
+        exit
+    }
+}
+
+
+$FilterValue = Read-Host "Enter $FilterType value"
+
+
+# ================================
+# Build Dynamic Query
+# ================================
+
+$queryObject = @{
+    
     size = 0
-
-    aggs = @{
-        client_ips = @{
-            terms = @{
-                field = "clientip.keyword"
-                size = $TopIPs
-                shard_size = ($TopIPs * 2)
-                order = @{
-                    _count = "desc"
-                }
-            }
-
-            aggs = @{
-                hosts = @{
-                    terms = @{
-                        field = "cs-host.keyword"
-                        size = $TopHosts
-                        shard_size = 25
-                        order = @{
-                            _count = "desc"
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-
-    _source = @{
-        excludes = @()
-    }
-
 
     query = @{
         bool = @{
-            must = @()
-
             filter = @(
-                
-                @{
-                    multi_match = @{
-                        query = $SearchText
-                        type = "best_fields"
-                        lenient = $true
-                    }
-                },
 
                 @{
-                    match_phrase = @{
-                        "cs-host" = $HostName
+                    term = @{
+                        $Field = $FilterValue
                     }
                 },
 
@@ -85,66 +85,74 @@ $query = @{
                     }
                 }
             )
-
-            should = @()
-            must_not = @()
         }
     }
 
-} | ConvertTo-Json -Depth 50
+
+    aggs = @{
+        total_requests = @{
+            value_count = @{
+                field = "_index"
+            }
+        }
+    }
+
+}
 
 
-# Save request for debugging
-$query | Out-File ".\async_request.json" -Encoding utf8
+$Body = $queryObject | ConvertTo-Json -Depth 20
 
 
-# ==============================
-# Submit Async Search
-# ==============================
+# Save query for troubleshooting
+$Body | Out-File ".\last_query.json"
+
+
+# ================================
+# Execute Async Search
+# ================================
+
 
 $AsyncUrl = "$ElasticUrl/$Index/_async_search" +
-"?batched_reduce_size=64" +
-"&ccs_minimize_roundtrips=true" +
-"&wait_for_completion_timeout=200ms" +
+"?wait_for_completion_timeout=200ms" +
 "&keep_on_completion=true" +
 "&keep_alive=60000ms" +
 "&ignore_unavailable=true"
 
 
-Write-Host "Submitting async search..."
+Write-Host ""
+Write-Host "Executing Async Search..."
+
 
 $response = Invoke-RestMethod `
     -Uri $AsyncUrl `
-    -Method Post `
-    -ContentType "application/json" `
-    -Body $query
+    -Method POST `
+    -Body $Body `
+    -ContentType "application/json"
 
 
-# ==============================
-# Get Result
-# ==============================
+
+# ================================
+# Poll Async Result
+# ================================
 
 $result = $null
 
 
-if ($response.id)
+if($response.id)
 {
-    Write-Host "Async ID: $($response.id)"
-
-    $AsyncId = $response.id
 
     do
     {
         Start-Sleep -Milliseconds 500
 
         $result = Invoke-RestMethod `
-            -Uri "$ElasticUrl/_async_search/$AsyncId" `
-            -Method Get
+            -Uri "$ElasticUrl/_async_search/$($response.id)" `
+            -Method GET
 
         Write-Host "Running: $($result.is_running)"
 
     }
-    while ($result.is_running -eq $true)
+    while($result.is_running -eq $true)
 
 }
 else
@@ -153,54 +161,17 @@ else
 }
 
 
-# ==============================
-# Extract Aggregation Result
-# ==============================
 
-$rows = @()
+# ================================
+# Display Count
+# ================================
 
-
-$buckets = $result.response.aggregations.client_ips.buckets
+$count = $result.response.hits.total.value
 
 
-foreach($ip in $buckets)
-{
-
-    if($ip.hosts.buckets.Count -gt 0)
-    {
-        foreach($host in $ip.hosts.buckets)
-        {
-            $rows += [PSCustomObject]@{
-                ClientIP = $ip.key
-                Requests = $ip.doc_count
-                Host = $host.key
-                HostRequests = $host.doc_count
-            }
-        }
-    }
-    else
-    {
-        $rows += [PSCustomObject]@{
-            ClientIP = $ip.key
-            Requests = $ip.doc_count
-            Host = ""
-            HostRequests = ""
-        }
-    }
-
-}
-
-
-# ==============================
-# Output
-# ==============================
-
-$rows | Format-Table -AutoSize
-
-$rows | Export-Csv `
-    ".\ClientIP_Report.csv" `
-    -NoTypeInformation
-
-
-Write-Host "Completed"
-Write-Host "Total IPs: $($rows.ClientIP.Count)"
+Write-Host ""
+Write-Host "=============================="
+Write-Host "Filter Type : $FilterType"
+Write-Host "Value       : $FilterValue"
+Write-Host "Requests    : $count"
+Write-Host "=============================="
