@@ -1,0 +1,59 @@
+If you have multiple .txt and .csv files, PowerShell is a good fit on Windows. The script below will:
+Search all .txt and .csv files in a folder (including subfolders)
+Extract all HTTP/HTTPS URLs
+Count unique URLs
+Count unique host:port combinations
+Extract certificate names (customize the regex if your certs are represented differently)
+Output only the counts
+# Folder containing all R5 input files
+$Folder = "C:\R5\InputFiles"
+
+# Find all txt and csv files
+$files = Get-ChildItem -Path $Folder -Recurse -Include *.txt,*.csv
+
+$urls = @()
+$hostPorts = @()
+$certs = @()
+
+foreach ($file in $files) {
+
+    Get-Content $file.FullName | ForEach-Object {
+
+        # Extract URLs
+        [regex]::Matches($_, 'https?://[^\s,"''<>]+') | ForEach-Object {
+            $url = $_.Value.Trim()
+
+            $urls += $url
+
+            try {
+                $uri = [System.Uri]$url
+                $hostPorts += $uri.Authority   # hostname:port
+            }
+            catch {}
+        }
+
+        # Extract certificate names (modify if your format differs)
+        [regex]::Matches($_, '(?i)(cert(name)?|certificate)\s*[:=]\s*([^\s,;"]+)') | ForEach-Object {
+            $certs += $_.Groups[3].Value
+        }
+    }
+}
+
+$uniqueUrls = $urls | Sort-Object -Unique
+$uniqueHostPorts = $hostPorts | Sort-Object -Unique
+$uniqueCerts = $certs | Sort-Object -Unique
+
+Write-Host ""
+Write-Host "===== RESULTS ====="
+Write-Host "Unique URLs       : $($uniqueUrls.Count)"
+Write-Host "Unique Host/Ports : $($uniqueHostPorts.Count)"
+Write-Host "Unique Certs      : $($uniqueCerts.Count)"
+
+If you also want the lists
+Add this to the end:
+$uniqueUrls | Out-File "$Folder\UniqueURLs.txt"
+$uniqueHostPorts | Out-File "$Folder\UniqueHostPorts.txt"
+$uniqueCerts | Out-File "$Folder\UniqueCerts.txt"
+
+If your certificates are not labeled as Cert=, Certificate=, etc.
+Upload one sample TXT (or a few lines containing certificate information). I can adjust the regex so it extracts the certificate values correctly. The URL and host/port extraction will already work as-is.
