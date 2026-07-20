@@ -1,0 +1,75 @@
+# Folder containing all R5 input files
+$Folder = "C:\R5\InputFiles"
+
+$urls = @()
+$hostPorts = @()
+$certs = @()
+
+Get-ChildItem -Path $Folder -Recurse -File | ForEach-Object {
+
+    if ($_.Extension -eq ".txt") {
+
+        Get-Content $_.FullName | ForEach-Object {
+
+            # Extract full URLs
+            [regex]::Matches($_,'https?://[^\s,"''<>]+') | ForEach-Object {
+                $url = $_.Value.Trim()
+                $urls += $url
+
+                try {
+                    $uri = [System.Uri]$url
+                    $hostPorts += $uri.Authority
+                } catch {}
+            }
+
+            # Extract certificate names
+            [regex]::Matches($_,'(?i)(cert(name)?|certificate)\s*[:=]\s*([^\s,;"]+)') | ForEach-Object {
+                $certs += $_.Groups[3].Value
+            }
+        }
+
+    }
+    elseif ($_.Extension -eq ".csv") {
+
+        Import-Csv $_.FullName | ForEach-Object {
+
+            # Hostname + Port columns
+            if ($_.Hostname -and $_.Port) {
+                $hostPort = "$($_.Hostname):$($_.Port)"
+                $hostPorts += $hostPort
+            }
+
+            # If the CSV has a URL column, include it
+            if ($_.URL) {
+                $urls += $_.URL
+            }
+            elseif ($_.Path -and $_.Hostname -and $_.Port) {
+                # Build URL if Path column exists
+                $urls += "http://$($_.Hostname):$($_.Port)$($_.Path)"
+            }
+
+            # Certificate column (if present)
+            if ($_.Certificate) {
+                $certs += $_.Certificate
+            }
+            elseif ($_.Cert) {
+                $certs += $_.Cert
+            }
+        }
+    }
+}
+
+$uniqueUrls = $urls | Sort-Object -Unique
+$uniqueHostPorts = $hostPorts | Sort-Object -Unique
+$uniqueCerts = $certs | Sort-Object -Unique
+
+Write-Host ""
+Write-Host "===== RESULTS ====="
+Write-Host "Unique URLs       : $($uniqueUrls.Count)"
+Write-Host "Unique Host/Ports : $($uniqueHostPorts.Count)"
+Write-Host "Unique Certs      : $($uniqueCerts.Count)"
+
+# Optional output files
+$uniqueUrls | Set-Content "$Folder\UniqueURLs.txt"
+$uniqueHostPorts | Set-Content "$Folder\UniqueHostPorts.txt"
+$uniqueCerts | Set-Content "$Folder\UniqueCerts.txt"
