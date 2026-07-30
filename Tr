@@ -1,59 +1,102 @@
-If you have multiple .txt and .csv files, PowerShell is a good fit on Windows. The script below will:
-Search all .txt and .csv files in a folder (including subfolders)
-Extract all HTTP/HTTPS URLs
-Count unique URLs
-Count unique host:port combinations
-Extract certificate names (customize the regex if your certs are represented differently)
-Output only the counts
-# Folder containing all R5 input files
-$Folder = "C:\R5\InputFiles"
+Code Documentation and Security
 
-# Find all txt and csv files
-$files = Get-ChildItem -Path $Folder -Recurse -Include *.txt,*.csv
 
-$urls = @()
-$hostPorts = @()
-$certs = @()
 
-foreach ($file in $files) {
+Overview
 
-    Get-Content $file.FullName | ForEach-Object {
+The team discussed the importance of adding comments to methods for future maintenance and standardizing documentation. They confirmed that the application underwent security scanning and performance testing, showing no significant overhead. The team requested an update to the OpenTelemetry NuGet package from version 1.15 to 1.17. They also addressed the need for real-time monitoring and the potential use of Dynatrace for performance alerts. The plan includes monitoring performance data, possibly pushing it to Elasticsearch (ELK) for analysis, and considering a purge process for data retention. The next steps involve updating the NuGet package and addressing the feedback.
 
-        # Extract URLs
-        [regex]::Matches($_, 'https?://[^\s,"''<>]+') | ForEach-Object {
-            $url = $_.Value.Trim()
 
-            $urls += $url
 
-            try {
-                $uri = [System.Uri]$url
-                $hostPorts += $uri.Authority   # hostname:port
-            }
-            catch {}
-        }
+Action Items
 
-        # Extract certificate names (modify if your format differs)
-        [regex]::Matches($_, '(?i)(cert(name)?|certificate)\s*[:=]\s*([^\s,;"]+)') | ForEach-Object {
-            $certs += $_.Groups[3].Value
-        }
-    }
-}
+• [] @Pragati - Add comprehensive inline comments and file-level header documentation to the OpenTelemetry collector and its methods, including explanations of what the collector does, key behaviors (such as line number handling and MSNQ usage), and why each method exists, following standard commenting rules.
 
-$uniqueUrls = $urls | Sort-Object -Unique
-$uniqueHostPorts = $hostPorts | Sort-Object -Unique
-$uniqueCerts = $certs | Sort-Object -Unique
+• [] @Pragati - Review the OpenTelemetry collector package source code and remove unnecessary try-catch blocks where exceptions are simply caught and rethrown, leaving logging and exception propagation handled by the consuming applications instead.
 
-Write-Host ""
-Write-Host "===== RESULTS ====="
-Write-Host "Unique URLs       : $($uniqueUrls.Count)"
-Write-Host "Unique Host/Ports : $($uniqueHostPorts.Count)"
-Write-Host "Unique Certs      : $($uniqueCerts.Count)"
+• [] @Pragati - Implement performance instrumentation for the remaining portal applications (including the eligibility verification service and other selected portals), focusing first on the August release so that performance monitoring is active and ready for production approval.
 
-If you also want the lists
-Add this to the end:
-$uniqueUrls | Out-File "$Folder\UniqueURLs.txt"
-$uniqueHostPorts | Out-File "$Folder\UniqueHostPorts.txt"
-$uniqueCerts | Out-File "$Folder\UniqueCerts.txt"
+• [] @Pragati - Design and implement reports and monitoring to identify long-running stored procedures and services based on captured duration data, enabling proactive detection of performance issues before incidents occur.
 
-If your certificates are not labeled as Cert=, Certificate=, etc.
-Upload one sample TXT (or a few lines containing certificate information). I can adjust the regex so it extracts the certificate values correctly. The URL and host/port extraction will already work as-is.
+• [] @Pragati - Reply to the review meeting invite with a consolidated summary of all review comments, indicating which items will be implemented immediately versus deferred to later phases (including adding comments and planning purge logic).
+
+• [] @Pragati - When the OpenTelemetry v1.17 NuGet package becomes available, update the OpenTelemetry collector NuGet package used by all applications and, during that update, incorporate the agreed changes such as improved comments and any related improvements discussed in this review.
+
+• [] Evaluate options to push performance instrumentation data from the SQL table to ELK and/or Dynatrace so that reports and near-real-time monitoring can be generated within roughly five minutes of data collection.
+
+• [] Schedule and hold a meeting with stakeholders to define database retention requirements and a purge strategy for the performance instrumentation tables once sufficient raw data has been collected.
+
+
+
+Outline
+
+Adding Comments and Standardizing Documentation
+
+• Speaker 1 emphasizes the importance of adding comments to methods and specific actions in the application for future maintenance.
+
+• Speaker 2 agrees with the feedback and Speaker 3 supports the idea of standard commenting at the file and method levels.
+
+• Speaker 1 mentions the need for security scanning and standard processes for NuGet packages and libraries.
+
+• Speaker 2 confirms that the application has undergone security scanning and that a request for the 1.17 version of the OpenTelemetry NuGet package has been made.
+
+Performance Testing and Exception Handling
+
+• Speaker 1 inquires about the performance impact of adding tracing to the application.
+
+• Speaker 2 confirms that performance tests were run multiple times in test environments and regression tests, showing no significant overhead.
+
+• Speaker 4 suggests removing unnecessary try-catch blocks if no action is taken on the exceptions.
+
+• Speaker 2 explains the challenge of using different versions of the logger in various applications and the need to capture exceptions and log them appropriately.
+
+Challenges with WCF Services and Instrumentation
+
+• Speaker 2 discusses the unique challenges of instrumenting WCF services, including the need for propagation behavior and endpoint modifications.
+
+• Speaker 2 explains the use of an app setting to enable or disable performance instrumentation without affecting existing service behavior.
+
+• Speaker 3 outlines the principles followed for capturing data, ensuring it does not impact performance or functionality.
+
+• Speaker 4 suggests creating a wiki page to document the different ways to consume the instrumentation package.
+
+Future Plans and Application Scope
+
+• Speaker 2 mentions that the current focus is on getting approval for performance instrumentation in the PA portal and monitoring its impact in production.
+
+• Speaker 3 confirms that the next application to be instrumented is the eligibility verification service.
+
+• Speaker 2 explains the priority order for instrumenting other applications based on their urgency and the need to monitor the current implementation before moving forward.
+
+• Speaker 3 emphasizes the importance of stabilizing the current implementation in production before expanding to other applications.
+
+Monitoring and Alerting
+
+• Speaker 1 asks about monitoring the performance data written to the SQL table and whether there are any alerts for exceptions.
+
+• Speaker 2 explains that the current plan is to run reports to identify slow store procedures and services, but no real-time alerts are in place.
+
+• Speaker 3 mentions the possibility of pushing data to Elasticsearch (ELK) for real-time monitoring and creating reports for performance analysis.
+
+• Speaker 4 suggests using Dynatrace for real-time monitoring and reducing the lag between data collection and analysis.
+
+Purge Process and Data Retention
+
+• Speaker 4 raises the issue of the large amount of data being added to the database and the need for a purge process.
+
+• Speaker 1 and Speaker 3 agree that a plan for data retention and purge should be developed based on the collected data.
+
+• Speaker 2 mentions that the current focus is on reviewing the collected data to determine the criteria for data retention and purge.
+
+• Speaker 3 confirms that the purge process will be determined based on the collected data and the need to manage the raw data effectively.
+
+Feedback and Implementation Plan
+
+• Speaker 1 advises Speaker 2 to document all feedback and comments, indicating which ones will be implemented immediately and which will be addressed later.
+
+• Speaker 2 agrees to update the OpenTelemetry NuGet package to version 1.17 and take care of the comments during the update.
+
+• Speaker 3 and Speaker 4 support the idea of capturing all comments and ensuring they are addressed in a timely manner.
+
+• Speaker 2 confirms that the feedback and comments will be documented and addressed as part of the package update process.
+
