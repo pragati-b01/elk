@@ -1,0 +1,41 @@
+Hi Team,
+
+Thank you all for your time and valuable feedback during the OpenTelemetry design review.
+
+Below is a summary of the review comments and the planned actions. I've also indicated which items will be addressed immediately and which are planned for future phases.
+
+### Immediate Actions
+
+* Add standard documentation throughout the OpenTelemetry package, including:
+
+  * File-level header comments.
+  * Method-level comments.
+  * Inline comments for complex logic.
+  * Comments explaining the collector flow, MSMQ usage, WCF-specific implementation, and configuration where applicable.
+* Add appropriate comments in the consuming applications (Startup, Global.asax, WCF configuration, etc.) to explain the instrumentation setup.
+* Remove unnecessary `try-catch` blocks where exceptions are only caught and rethrown, allowing consuming applications to handle logging.
+* Update the OpenTelemetry NuGet package from **v1.15** to **v1.17** once it becomes available and incorporate the agreed code improvements during that update.
+* Continue the rollout for the Eligibility Verification application after the PA Portal implementation and production validation.
+* Continue implementing performance reports to identify long-running stored procedures, slow service calls, and transaction duration trends.
+* Prepare a Wiki/implementation guide describing the different integration approaches for MVC/Web API and WCF applications to simplify future onboarding and maintenance.
+
+### Planned for Future Phases
+
+* Evaluate pushing telemetry data to **ELK** and/or **Dynatrace** to enable near real-time reporting and monitoring.
+* Evaluate real-time alerting for performance issues based on the captured telemetry.
+* Define a database retention and purge strategy after sufficient production data has been collected and retention requirements are finalized.
+* Continue expanding the instrumentation to the remaining portal applications after the current implementation has been stabilized in production.
+
+### Review Notes
+
+* Security scanning has been completed successfully.
+* Performance testing (before and after instrumentation) showed no significant performance impact.
+* The current implementation follows the design principles discussed during the review:
+
+  * Instrumentation can be enabled or disabled through configuration.
+  * Instrumentation should not impact existing application functionality.
+  * WCF services require additional configuration compared to MVC/Web API applications.
+
+Please let me know if I missed any review comments or if any of the above should be updated.
+
+Thank you.
