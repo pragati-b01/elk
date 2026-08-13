@@ -1,0 +1,580 @@
+Dynatrace Knowledge Transfer (KT) Session Notes
+
+Visual Monitoring • Server Configuration • RUM • Troubleshooting
+
+Composed team notes based on the Visual Monitoring Setup and Production Server Configuration KT sessions
+
+Purpose
+
+Provide a reusable reference for configuring Dynatrace synthetic monitoring, onboarding servers, enabling RUM, tracking changes, and troubleshooting production/regression issues.
+
+Source basis: These notes consolidate the two provided KT meeting summaries/transcripts. They preserve the terminology and process described in the sessions; where the meetings did not specify a complete technical detail, the note is intentionally left as a follow-up/confirmation item rather than filled with assumptions.
+
+
+Visual Monitoring • Server Configuration • RUM • Troubleshooting  |  Page 
+
+Dynatrace Knowledge Transfer (KT) Notes
+
+1. Executive Summary
+
+The KT sessions covered the operational lifecycle of Dynatrace monitoring from configuration through troubleshooting. The main themes were regression visual monitoring, synthetic HTTP monitor management, new server onboarding, firewall and OneAgent installation coordination, RUM/application detection, change tracking, and incident/problem investigation.
+
+Regression monitoring needs periodic cleanup so broken synthetic monitors are identified and corrected before they hide application problems.
+
+The AMD portal-* tag on HTTP monitors is a key dashboard classification mechanism: it determines which dashboard pane a monitor appears in.
+
+New servers should be tracked centrally, approved, network-enabled, provisioned with OneAgent, validated, and only then enabled for active monitoring at the appropriate cutover point.
+
+RUM is used differently depending on the scope of the problem: application-specific RUM is useful for a particular user/application issue, while host-level monitoring is useful for broader infrastructure/resource problems.
+
+All Dynatrace changes should be recorded in the shared tracker so the team maintains a reliable change history across production and non-production environments.
+
+Dynatrace Problems should be investigated using current state plus historical trends before escalating; persistent or sustained problems require action, while short-lived/transient events may not.
+
+2. End-to-End Operating Flow
+
+The combined KT flow can be used as the high-level operating model:
+
+1. Identify a monitoring or server requirement.
+
+2. Determine environment/scope (production, non-production, regression; application, site, host, or synthetic monitor).
+
+3. For production changes, create and obtain the required change approvals/tickets before the change is performed.
+
+4. Complete firewall/network prerequisites and obtain the appropriate Dynatrace/OneAgent installation information.
+
+5. Configure the Dynatrace object (synthetic monitor, host monitoring mode, application detection/RUM, etc.).
+
+6. Validate that the new or changed configuration is reporting correctly in Dynatrace.
+
+7. Enable/disable monitoring at the correct cutover point where a server replacement is involved.
+
+8. Update the shared tracker with the completed change and status.
+
+9. Continue periodic dashboard/problem review and investigate sustained issues.
+
+3. Visual Monitoring / Synthetic HTTP Monitoring
+
+3.1 Dashboard classification using AMD portal-* tags
+
+A central point from the KT session is that the dashboard is driven by monitor criteria/tags. For an HTTP synthetic monitor to appear in the intended dashboard pane, it needs the appropriate AMD portal-* tag.
+
+Key note: The AMD portal-* tag is not just descriptive metadata in this dashboard design; it is used to control which pane/tile the monitor appears in.
+
+Example discussed: AMD portal-EVV LTC places the monitor in the corresponding EVV LTC area/pane.
+
+The team also reviewed availability-level tags such as AMDR and availability level indicators. These are separate from the dashboard placement tag and are used for other monitoring/classification purposes discussed in the session.
+
+3.2 Existing monitor vs. new monitor
+
+Need
+
+Recommended approach
+
+KT note
+
+Move a working monitor to another dashboard pane
+
+Change/remove the existing AMD portal-* tag and add the new appropriate tag.
+
+Do not create a second monitor just to change dashboard placement.
+
+Fix a broken monitor
+
+Investigate the underlying URL/HTTP/error issue and correct the cause.
+
+Changing tags does not fix a monitor that is returning an error.
+
+Add a new application to monitoring
+
+Create a new synthetic monitor, then assign the correct dashboard tag.
+
+Allow time for an execution before expecting the dashboard to display the new result.
+
+3.3 Procedure: create a new HTTP synthetic monitor
+
+1. Open the Synthetic monitoring area in the correct management zone/environment.
+
+2. Create an HTTP monitor and provide the monitor name or URL. The KT demonstration used a test-style monitor name such as "AMD test".
+
+3. Add at least the required baseline tag(s), including the AMDR tag discussed in the session.
+
+4. Configure the HTTP request and target URL.
+
+5. Apply the team standard settings discussed in the session: accept any SSL certificate, use a 60-second timeout, and configure the required successful HTTP status handling (the transcript references the team treating 401 as successful and changing the default success-code behavior accordingly).
+
+6. Select the appropriate execution location. The discussion referenced TPC/SDC/ADC production locations depending on environment.
+
+7. Use an approximately 2-minute execution frequency when the monitor is intended to support the dashboard view, consistent with the existing monitor pattern discussed.
+
+8. Create/save the monitor.
+
+9. Add the correct AMD portal-* dashboard tag so the monitor is classified into the intended pane.
+
+10. Wait for at least one execution / several minutes and verify that the monitor appears in the expected dashboard location.
+
+Configuration note: Exact location names, management zones, and environment mappings should be checked against the current Dynatrace configuration. The KT session demonstrated the concept and existing patterns rather than providing a complete configuration matrix.
+
+3.4 Regression monitoring cleanup
+
+Review regression synthetic monitors that are currently failing or no longer functioning.
+
+For each failure, identify the actual HTTP/error response and investigate the underlying application/network cause.
+
+Do not treat a dashboard placement problem as the same thing as an execution failure.
+
+Capture screenshots during the regression run as requested in the session, and consolidate them into one team document.
+
+Use regression as an early-warning environment: the goal is to restore enough coverage that important failures are visible before production.
+
+4. Dynatrace Server Onboarding
+
+The KT session outlined a repeatable process for adding newly provisioned servers to Dynatrace, with special attention to production approvals, firewall readiness, OneAgent installation, and controlled cutover for replacement servers.
+
+Step
+
+Stage
+
+What to do
+
+Tracker evidence
+
+1
+
+Identify / approve
+
+Confirm server name, environment, CPU, memory, OS, monitoring level and whether it replaces an existing server.
+
+Server details + approval/status
+
+2
+
+Firewall
+
+Send the approved server list to the appropriate network contact, obtain the ActiveGate/firewall requirements, and submit/track the firewall rule.
+
+Firewall submitted/completed/in progress
+
+3
+
+OneAgent preparation
+
+Obtain the appropriate OneAgent download/install commands or approved software package. Commands differ for Windows and Linux.
+
+Install package/command status
+
+4
+
+Security / PAD coordination
+
+Follow the security/software download process and coordinate with PAD where required, especially for Linux installation activities discussed.
+
+Meeting/owner/date/status
+
+5
+
+Install
+
+Install the OneAgent once prerequisites and approvals are satisfied.
+
+Installation status
+
+6
+
+Validate
+
+Wait for the agent to report and validate the host/service in Dynatrace.
+
+Dashboard validation
+
+7
+
+Enable / cut over
+
+For replacement servers, keep the new host disabled until the application cutover; then disable the old host and enable the new host.
+
+Cutover date + monitoring state
+
+4.1 Server information expected in the request
+
+Server name(s).
+
+Production or non-production classification.
+
+CPU and memory/capacity information, which was discussed as important for licensing/data-usage justification.
+
+Operating system (Windows or Linux).
+
+Whether the server is Full Stack or infrastructure-oriented monitoring, where that decision is already known.
+
+For replacement servers, identify the old server being replaced in the same request where possible.
+
+Licensing/cutover note: The KT explained that a server can be added ahead of time and left with monitoring disabled. The intent is to prepare the replacement server without immediately collecting monitoring data until the application actually switches over.
+
+4.2 Firewall and OneAgent prerequisites
+
+After server approval, the next major dependency is network/firewall readiness.
+
+The session referenced providing the server list to the responsible contact and obtaining the required ActiveGate and port information.
+
+Port 9999 was specifically mentioned in the session. Confirm the current rule/port requirement with the responsible team before submitting any new request.
+
+The download/install process now includes security/software coordination rather than the older direct-download approach.
+
+The session referred to an AMD software download location; verify that the shared folder/location exists and is accessible before giving the location to the security team.
+
+Windows and Linux use different installation commands. Linux may additionally require PAD assistance/access as described during the meeting.
+
+4.3 Production vs. non-production process
+
+Environment
+
+Change process
+
+Documentation
+
+Non-production
+
+Create the appropriate TFS ticket and perform the change according to the team process.
+
+Update the shared Dynatrace tracker.
+
+Production
+
+Create the required TFS and PPM/TPM ticket(s) referenced in the session and obtain approval before performing the production installation/change.
+
+Update the tracker with approval, execution and validation status.
+
+5. RUM and Application Detection
+
+The second KT session demonstrated how to understand and configure application detection rules and how those rules control the scope of Real User Monitoring (RUM).
+
+5.1 Application detection concept
+
+A Dynatrace application can be associated with traffic by using application detection rules.
+
+The session demonstrated a rule based on URL start/host matching.
+
+For a specific application such as a PA/prior-authorization application, the URL/detection rule identifies the relevant application traffic inside the broader site/domain.
+
+The discussion used examples involving secure and operations sites to explain how application scope maps to the site/domain structure.
+
+5.2 Application-level vs site-level RUM
+
+Scope
+
+Use case
+
+KT caution / note
+
+Specific application
+
+Turn on/off or configure RUM for a targeted application using its detection rule.
+
+Preferred when only one application needs monitoring.
+
+Entire site/domain
+
+Enable RUM broadly for applications under a site.
+
+The session specifically cautioned that high-traffic secure sites may make broad enablement undesirable.
+
+5.3 Practical RUM configuration flow
+
+1. Navigate to the appropriate Frontend/Web and mobile monitoring/application detection area.
+
+2. Identify the existing application that is closest to the requirement and inspect its detection rule before creating a new one.
+
+3. Review the application detection rule and confirm the URL/host pattern used to associate traffic with the application.
+
+4. For a new application, add an application detection item and configure the appropriate URL/host condition.
+
+5. Once the application is detected, use the application settings to enable or disable RUM as required.
+
+6. Validate that the application appears and that user sessions are being collected in the intended scope.
+
+Access action: The KT specifically identified the need to request non-production AMDR configuration access so the team can practice RUM changes safely in regression.
+
+6. Host Monitoring Mode: Infrastructure vs. Full Stack
+
+The KT demonstrated that the host monitoring mode can be reviewed/changed from the host settings area.
+
+1. Open the target host.
+
+2. Open Settings / Host monitoring.
+
+3. Review the current monitoring mode.
+
+4. Select the required mode, such as Infrastructure monitoring or Full Stack monitoring, based on the application/team requirement.
+
+5. Record the change in the shared tracker.
+
+Change-history note: The session explicitly recommended recording monitoring-mode changes in the tracker, including switches between infrastructure and Full Stack monitoring.
+
+7. Troubleshooting and Debugging
+
+7.1 Start with the problem statement
+
+A single-user issue and a system-wide slowness issue should not be investigated in exactly the same way.
+
+For an individual-user issue, start from RUM/user session information.
+
+For application-wide slowness, start from the affected host/server and infrastructure resource indicators.
+
+7.2 Troubleshoot a specific user/session with RUM
+
+1. Go to the relevant Frontend/RUM application.
+
+2. Identify the user/session associated with the reported problem.
+
+3. Set the time range to the date/time reported by the user.
+
+4. Open the relevant session/request.
+
+5. Perform waterfall analysis to see the underlying requests.
+
+6. Inspect individual requests for duration, status and errors.
+
+7. Use View Trace where available to drill into downstream activity.
+
+8. Use the trace to identify slow/error-producing Web API, database, AD or other calls and provide that evidence to the application team.
+
+Debugging example from the session: The trace walkthrough showed that a user request could include Web API activity, multiple database calls, an AD call, and multiple Service Fabric calls. Service Fabric was described as comparatively black-box in this setup, meaning its internal processing may not be visible to the same depth as instrumented Web API/database activity.
+
+7.3 Troubleshoot application-wide slowness
+
+1. Identify the affected web/application server(s).
+
+2. Review CPU utilization and look for sustained or abnormal peaks.
+
+3. Review memory utilization and look for sustained pressure.
+
+4. Review worker thread counts where available.
+
+5. Check the internal portal performance dashboard discussed in the KT.
+
+6. If the infrastructure indicators suggest a resource problem, contact the appropriate application/support SME and provide the evidence collected.
+
+7.4 Worker threads and known patterns
+
+The session described high worker thread count as a useful indicator of a possible application/resource problem.
+
+A known system that normally exhibits high thread counts may not require repeated escalation if the behavior is already understood and documented.
+
+Unexpected or newly elevated thread counts should be investigated in context rather than treated as an automatic fault.
+
+8. Dynatrace Problems: When to Investigate vs. Escalate
+
+The KT emphasized trend-based investigation before escalating every problem notification.
+
+1. Open the problem and understand what resource/application is affected.
+
+2. Check whether the problem is still active or was only a brief transient event.
+
+3. Review approximately the last 7 days to see whether it is a first occurrence or a recurring pattern.
+
+4. If needed, extend the view to approximately 30 days for additional context.
+
+5. Consider the severity and magnitude of the issue (for example, a small error-rate increase may behave differently from a sustained high error rate).
+
+6. If the issue is persistent, worsening, or clearly actionable, raise it with the appropriate team/SME and provide the evidence.
+
+7. If it was brief and already resolved, document/observe as appropriate rather than automatically paging someone.
+
+8.1 Examples discussed in the KT
+
+A low-disk-space problem that remains for many days should be raised to the responsible portal/application team so space can be freed.
+
+A short-lived burst of errors that disappears quickly may not require immediate escalation if no ongoing impact remains.
+
+A recurring problem that appears repeatedly over 7-30 days should be interpreted as a pattern and investigated accordingly.
+
+If an external/managed platform owns the component, the team should route the issue to the responsible owner rather than treating it as an internally actionable application defect.
+
+9. Shared Tracker / Change History
+
+The tracker is an important operational control from both KT sessions. The team should use it consistently for production and non-production changes.
+
+Move the existing monitoring spreadsheet into the shared Dynatrace/SharePoint location.
+
+Track new servers and servers planned for retirement.
+
+Track firewall status: submitted, approved, implemented, or still in progress.
+
+Track OneAgent installation status and validation.
+
+Track monitoring enabled/disabled state and cutover date where applicable.
+
+Track RUM enablement/disablement and application detection changes.
+
+Track Full Stack vs Infrastructure monitoring changes.
+
+Use notes/comments for owner, date, ticket/reference, and current status.
+
+9.1 Suggested tracker fields based on the KT
+
+Field
+
+Example value
+
+Why track it
+
+Server/Application
+
+OnBase Production Server / PA RUM
+
+Identify the object being changed
+
+Environment
+
+Prod / Non-Prod / Regression
+
+Control scope
+
+CPU / Memory / OS
+
+As requested in approval
+
+Support provisioning/licensing context
+
+Firewall
+
+Submitted / Completed / In Progress
+
+Track prerequisite
+
+OneAgent
+
+Not Started / Installed / Validated
+
+Track deployment
+
+Monitoring State
+
+Disabled / Enabled
+
+Control cutover
+
+RUM
+
+On / Off
+
+Track application monitoring
+
+Monitoring Mode
+
+Infrastructure / Full Stack
+
+Track host configuration
+
+Ticket / Approval
+
+TFS / PPM/TPM reference
+
+Audit/change traceability
+
+Owner / Date / Notes
+
+Name, date, comments
+
+Operational accountability
+
+10. Consolidated Action Items
+
+The following list combines the explicit action items from the supplied meeting summaries with the operational follow-ups described in the sessions.
+
+Regression screenshots: Capture screenshots during the regression run and combine the team screenshots into one consolidated document.
+
+Broken HTTP monitor: Investigate the currently failing monitor, identify the returned error/underlying problem, and restore it to working condition.
+
+Shared tracker: Upload the existing server monitoring spreadsheet to the shared Dynatrace/SharePoint folder.
+
+Firewall status: Update the tracker with firewall status for non-production and production OnBase servers.
+
+AMD software folder: Verify the AMD software download folder/location exists and is accessible; provide the confirmed location to the security team.
+
+PAD coordination: Coordinate with PAD for the required installation activity and validate the resulting Dynatrace service/agent status.
+
+Non-production AMDR access: Request the relevant group/Zach for access needed to test RUM configuration in non-production/regression.
+
+OnBase production onboarding: Complete the remaining steps to add the new OnBase production servers to Dynatrace and validate reporting.
+
+Regression cleanup: Restore important regression applications/monitors to a healthy state so failures can be found early.
+
+Portal dashboard access: Share the internal portal performance dashboard and ensure team members can access it.
+
+Change tracking discipline: Record every relevant Dynatrace configuration change in the tracker, including production/non-production changes, RUM, monitoring mode and enable/disable actions.
+
+11. Daily / Periodic Operational Checklist
+
+Use this as a lightweight operational routine derived from the KT discussion.
+
+☐ Review the main visual/synthetic dashboard for monitors that are red, missing or otherwise abnormal.
+
+☐ Check the portal performance dashboard for CPU, memory and worker-thread anomalies when time permits or when an application issue is reported.
+
+☐ Review the Dynatrace Problems page for persistent problems and follow the 7-day / 30-day trend approach described in the KT.
+
+☐ Investigate ongoing issues immediately when they remain active and materially affect availability/performance.
+
+☐ Verify that recent server/configuration changes are reflected in the shared tracker.
+
+☐ For any new production change, verify the required change tickets/approvals exist before execution.
+
+☐ For replacement servers, confirm the old/new monitoring state is aligned with the application cutover.
+
+12. KT Notes and Clarifications
+
+Terminology: The sessions used terms such as TFS and PPM/TPM, PAD, AMDR, ActiveGate, RUM, OneAgent, Full Stack, and Infrastructure monitoring. The document retains these terms as described in the KT rather than redefining them beyond what the meetings established.
+
+Port information: Port 9999 was mentioned during the firewall discussion. Treat this as a session note to validate against the current approved network design before use in a new firewall request.
+
+Environment/location names: The session referenced TPC/SDC/ADC locations and multiple management zones. Confirm the currently valid environment/location mapping in Dynatrace before creating new monitors.
+
+RUM access: The session identified non-production access as a prerequisite for practicing RUM configuration safely in regression.
+
+Source limitations: Some transcript sections were conversational and did not provide a complete formal runbook. This document therefore organizes the described process into a usable team reference but does not invent missing ticket numbers, owner names, URLs, permissions, exact firewall ports beyond what was spoken, or undocumented configuration values.
+
+13. Quick Reference
+
+Question / Situation
+
+Use this KT approach
+
+Why is a synthetic monitor not in the right dashboard pane?
+
+Check the AMD portal-* tag.
+
+The monitor is in the right pane but failing.
+
+Investigate the HTTP response/error and underlying problem.
+
+Need to move an existing monitor to another pane?
+
+Change the AMD portal-* tag; do not recreate unnecessarily.
+
+Adding a new server?
+
+Approval → firewall → OneAgent/security/PAD process → install → validate → enable at cutover → tracker.
+
+Replacing an old server?
+
+Add the new server ahead of time with monitoring disabled; switch monitoring states during application cutover.
+
+Specific user reports an application problem?
+
+Use RUM/session → time range → waterfall → trace.
+
+Everyone says application is slow?
+
+Check host/application server CPU, memory, worker threads and the portal dashboard.
+
+Dynatrace problem appeared?
+
+Check current state and 7-day/30-day history before escalating.
+
+Changed Dynatrace configuration?
+
+Update the shared tracker and reference the relevant ticket/approval where applicable.
+
+Visual Monitoring • Server Configuration • RUM • Troubleshooting  |  Page
