@@ -1,102 +1,348 @@
-Code Documentation and Security
+Yes. The two files are essentially two parts of the same Dynatrace knowledge-transfer / working session. One focuses more on visual monitoring setup and RUM, while the other continues into production server onboarding and operational troubleshooting.
 
+1. Visual Monitoring Setup Meeting
+Main topics covered
 
+A. Regression visual monitoring cleanup
 
-Overview
+Regression currently has some monitors that are not working.
+Action item: review and clean up the regression environment so monitoring is reliable.
+The goal is to detect problems earlier instead of discovering them only in production.
+B. How Dynatrace HTTP monitors appear on the dashboard
 
-The team discussed the importance of adding comments to methods for future maintenance and standardizing documentation. They confirmed that the application underwent security scanning and performance testing, showing no significant overhead. The team requested an update to the OpenTelemetry NuGet package from version 1.15 to 1.17. They also addressed the need for real-time monitoring and the potential use of Dynatrace for performance alerts. The plan includes monitoring performance data, possibly pushing it to Elasticsearch (ELK) for analysis, and considering a purge process for data retention. The next steps involve updating the NuGet package and addressing the feedback.
+The important concept is the AMD portal-* tag.
 
+Each HTTP synthetic monitor needs the appropriate AMD portal-* tag to determine which dashboard pane/tile it appears in.
+Example:
+AMD portal-*
+AMD portal-EVV LTC
+The availability tags such as AMDR, availability level 1, etc. control other monitoring characteristics.
 
+Key takeaway:
+If an existing monitor is working but appears in the wrong dashboard pane, you generally change its tags rather than create another monitor.
 
-Action Items
+C. Creating a new HTTP synthetic monitor
 
-• [] @Pragati - Add comprehensive inline comments and file-level header documentation to the OpenTelemetry collector and its methods, including explanations of what the collector does, key behaviors (such as line number handling and MSNQ usage), and why each method exists, following standard commenting rules.
+The standard process discussed was:
 
-• [] @Pragati - Review the OpenTelemetry collector package source code and remove unnecessary try-catch blocks where exceptions are simply caught and rethrown, leaving logging and exception propagation handled by the consuming applications instead.
+Go to Synthetic monitoring.
+Create an HTTP monitor.
+Give it a name / URL.
+Add the required tags.
+Configure the HTTP request.
+Use the standard settings:
+Accept any SSL certificate.
+Timeout around 60 seconds.
+Treat the required success status appropriately.
+Select the appropriate location.
+Use approximately 2-minute execution frequency for dashboard monitoring.
+Create the monitor.
+Add the appropriate AMD portal-* tag.
+Allow several minutes / an execution cycle for it to appear on the dashboard.
+D. Moving an existing monitor
 
-• [] @Pragati - Implement performance instrumentation for the remaining portal applications (including the eligibility verification service and other selected portals), focusing first on the August release so that performance monitoring is active and ready for production approval.
+If a monitor needs to move from one dashboard tile to another:
 
-• [] @Pragati - Design and implement reports and monitoring to identify long-running stored procedures and services based on captured duration data, enabling proactive detection of performance issues before incidents occur.
+Remove the existing AMD portal-* tag and add the appropriate new one.
 
-• [] @Pragati - Reply to the review meeting invite with a consolidated summary of all review comments, indicating which items will be implemented immediately versus deferred to later phases (including adding comments and planning purge logic).
+You don't need to create a new monitor.
 
-• [] @Pragati - When the OpenTelemetry v1.17 NuGet package becomes available, update the OpenTelemetry collector NuGet package used by all applications and, during that update, incorporate the agreed changes such as improved comments and any related improvements discussed in this review.
+E. Adding new servers to Dynatrace
 
-• [] Evaluate options to push performance instrumentation data from the SQL table to ELK and/or Dynatrace so that reports and near-real-time monitoring can be generated within roughly five minutes of data collection.
+The meeting also introduced a server onboarding tracker.
 
-• [] Schedule and hold a meeting with stakeholders to define database retention requirements and a purge strategy for the performance instrumentation tables once sufficient raw data has been collected.
+The tracker should contain:
 
+New servers
+Servers being retired
+Firewall status
+Installation status
+Notes
+Production/non-production status
 
+The tracker should be moved to the shared SharePoint/Dynatrace location so everyone uses the same source.
 
-Outline
+2. Production Server Configuration Meeting
 
-Adding Comments and Standardizing Documentation
+This file goes deeper into the new server → Dynatrace production onboarding process.
 
-• Speaker 1 emphasizes the importance of adding comments to methods and specific actions in the application for future maintenance.
+Server onboarding process
 
-• Speaker 2 agrees with the feedback and Speaker 3 supports the idea of standard commenting at the file and method levels.
+The discussion establishes roughly this flow:
 
-• Speaker 1 mentions the need for security scanning and standard processes for NuGet packages and libraries.
+Step 1 — Identify and obtain approval
 
-• Speaker 2 confirms that the application has undergone security scanning and that a request for the 1.17 version of the OpenTelemetry NuGet package has been made.
+For each server, gather information such as:
 
-Performance Testing and Exception Handling
+Server name
+Production vs. non-production
+CPU
+Memory
+OS
+Whether Full Stack monitoring is required
+Whether the new server replaces an existing server
 
-• Speaker 1 inquires about the performance impact of adding tracing to the application.
+When a new server replaces an old one, it's better to mention both the replacement and retirement in the same approval request. This helps with licensing justification.
 
-• Speaker 2 confirms that performance tests were run multiple times in test environments and regression tests, showing no significant overhead.
+Step 2 — Firewall request
 
-• Speaker 4 suggests removing unnecessary try-catch blocks if no action is taken on the exceptions.
+After approval:
 
-• Speaker 2 explains the challenge of using different versions of the logger in various applications and the need to capture exceptions and log them appropriately.
+Send the approved server list to the appropriate team.
+Obtain the required Dynatrace ActiveGate information.
+Determine the firewall rule/port requirements.
+The discussion specifically references port 9999.
+Submit and track the firewall request.
 
-Challenges with WCF Services and Instrumentation
+Firewall completion should be recorded in the tracker.
 
-• Speaker 2 discusses the unique challenges of instrumenting WCF services, including the need for propagation behavior and endpoint modifications.
+Step 3 — Obtain OneAgent installation information
 
-• Speaker 2 explains the use of an app setting to enable or disable performance instrumentation without affecting existing service behavior.
+After the firewall is implemented:
 
-• Speaker 3 outlines the principles followed for capturing data, ensuring it does not impact performance or functionality.
+Request the appropriate Dynatrace OneAgent download/install commands.
+Commands differ for Windows vs. Linux.
+The installation command contains environment/server-specific information.
+Linux requires additional involvement/access, including the discussion's reference to PAD.
+Step 4 — Security/software process
 
-• Speaker 4 suggests creating a wiki page to document the different ways to consume the instrumentation package.
+The process has changed from the older approach.
 
-Future Plans and Application Scope
+Previously, the team could download and install the agent directly.
 
-• Speaker 2 mentions that the current focus is on getting approval for performance instrumentation in the PA portal and monitoring its impact in production.
+Now the process involves:
 
-• Speaker 3 confirms that the next application to be instrumented is the eligibility verification service.
+Security/software download process
+Providing the appropriate software location
+Security review/process
+Obtaining the approved installation package/commands
 
-• Speaker 2 explains the priority order for instrumenting other applications based on their urgency and the need to monitor the current implementation before moving forward.
+The meeting specifically notes that the software is associated with an AMD software location.
 
-• Speaker 3 emphasizes the importance of stabilizing the current implementation in production before expanding to other applications.
+Step 5 — Install OneAgent
 
-Monitoring and Alerting
+Once prerequisites are complete:
 
-• Speaker 1 asks about monitoring the performance data written to the SQL table and whether there are any alerts for exceptions.
+Install the Dynatrace OneAgent.
+For Linux, coordinate with the required team/person.
+For production, required change/TFS/PPM approval must be completed before installation.
+Step 6 — Enable monitoring
 
-• Speaker 2 explains that the current plan is to run reports to identify slow store procedures and services, but no real-time alerts are in place.
+A very important licensing point was discussed:
 
-• Speaker 3 mentions the possibility of pushing data to Elasticsearch (ELK) for real-time monitoring and creating reports for performance analysis.
+Adding a server to Dynatrace does not necessarily consume monitoring/data usage if monitoring is disabled.
 
-• Speaker 4 suggests using Dynatrace for real-time monitoring and reducing the lag between data collection and analysis.
+Therefore, the recommended approach for a replacement server is:
 
-Purge Process and Data Retention
+Add the new server ahead of time.
+Keep monitoring disabled.
+When the application actually switches to the new server:
+Disable the old server.
+Enable the new server.
 
-• Speaker 4 raises the issue of the large amount of data being added to the database and the need for a purge process.
+This avoids prematurely consuming monitoring data.
 
-• Speaker 1 and Speaker 3 agree that a plan for data retention and purge should be developed based on the collected data.
+Step 7 — Validate
 
-• Speaker 2 mentions that the current focus is on reviewing the collected data to determine the criteria for data retention and purge.
+After installation/enabling:
 
-• Speaker 3 confirms that the purge process will be determined based on the collected data and the need to manage the raw data effectively.
+Wait a few minutes.
+Check the Dynatrace dashboard.
+Confirm the host/OneAgent is reporting.
+Validate that monitoring is functioning correctly.
 
-Feedback and Implementation Plan
+The meeting specifically discusses checking the dashboard after roughly 2–5 minutes.
 
-• Speaker 1 advises Speaker 2 to document all feedback and comments, indicating which ones will be implemented immediately and which will be addressed later.
+3. RUM / Application Monitoring
 
-• Speaker 2 agrees to update the OpenTelemetry NuGet package to version 1.17 and take care of the comments during the update.
+The second major section is about Real User Monitoring (RUM).
 
-• Speaker 3 and Speaker 4 support the idea of capturing all comments and ensuring they are addressed in a timely manner.
+Application detection
 
-• Speaker 2 confirms that the feedback and comments will be documented and addressed as part of the package update process.
+RUM applications are associated through application detection rules, commonly using URL/host matching.
 
+For example:
+
+secure.tmhp.com → secure application
+operations.tmhp.org → operations application
+A specific PA URL can be configured so that RUM applies specifically to that application.
+
+The important distinction is:
+
+Entire-site RUM
+
+Turning RUM on at the site/domain level can enable it for all applications under that site.
+
+Application-level RUM
+
+Using an application detection rule allows RUM to be configured for a specific application/URL.
+
+The meeting emphasizes being careful with secure sites because of their high traffic volume.
+
+4. Full Stack vs Infrastructure Monitoring
+
+The meeting also covers changing the host monitoring mode.
+
+From the host:
+
+Settings → Host monitoring → Monitoring mode
+
+You can select between:
+
+Infrastructure monitoring
+Full Stack monitoring
+
+Any change should be recorded in the tracker.
+
+5. Production change-management process
+
+A recurring theme across both meetings is:
+
+Non-production
+Create the TFS ticket.
+Approval may not be required.
+Perform the change.
+Update the tracker.
+Production
+Create the required TFS/PPM/change ticket.
+Obtain approval.
+Perform the change.
+Update the tracker.
+
+The tracker is intended to become the change history for Dynatrace.
+
+Changes to record include:
+
+Adding/removing servers
+Enabling/disabling monitoring
+Infrastructure → Full Stack
+Turning RUM on/off
+Other Dynatrace configuration changes
+6. How to troubleshoot an application problem
+
+This is one of the most useful parts of the second file.
+
+There are essentially two troubleshooting paths.
+
+Scenario A — One particular user is having a problem
+
+Use RUM.
+
+Flow:
+
+Frontend → Application → User/session → Specific time → Request → Waterfall → Trace
+
+You can investigate:
+
+User session
+Exact time of failure
+Individual requests
+Request duration
+Errors
+Web API calls
+Database calls
+Active Directory calls
+Service Fabric calls
+
+The trace can show the chain of activity behind a user's request.
+
+For example:
+
+Browser → Web API → Database → AD → Service Fabric
+
+This helps the application team identify where the delay/error is occurring.
+
+Scenario B — Everyone says the application is slow
+
+Start with the host/server level.
+
+Check:
+
+CPU
+Memory
+Web server resources
+Application server resources
+Service Fabric resources
+Worker thread count
+
+A significant CPU/memory spike can indicate an infrastructure/resource problem.
+
+7. Portal monitoring dashboard
+
+An internal portal dashboard was discussed as another operational tool.
+
+It provides visibility into:
+
+Application server CPU
+Application server memory
+Web server CPU/memory
+Service Fabric CPU/memory
+Worker thread counts
+
+The recommendation is to check this dashboard periodically during the day.
+
+8. Problems dashboard
+
+Another important operational practice:
+
+Don't automatically escalate every Dynatrace problem.
+
+When a problem appears:
+
+First check its history
+
+Look at approximately:
+
+Last 7 days → then 30 days if necessary
+
+Ask:
+
+Is this the first occurrence?
+Does this happen regularly?
+Is the error rate actually significant?
+Is the problem still occurring?
+Is it already known?
+Is another team responsible?
+Example
+
+If a problem occurred briefly for a few minutes and disappeared, it may not require escalation.
+
+If a problem:
+
+remains active for hours/days,
+repeatedly occurs,
+has a significant error increase,
+or shows sustained resource exhaustion,
+
+then it should be investigated/escalated.
+
+9. Most important action items
+
+Combining both files, I would reduce the meeting into these core action items:
+
+Priority	Action
+1	Complete onboarding of the new OnBase production servers into Dynatrace
+2	Verify firewall requests/status for those servers
+3	Obtain OneAgent installation commands/packages
+4	Complete production approval/change process before installation
+5	Install and validate OneAgent
+6	Keep replacement servers disabled until the application switches
+7	Disable old servers and enable new servers during cutover
+8	Clean up/fix the Regression synthetic monitoring
+9	Review broken synthetic monitors and their underlying HTTP errors
+10	Make sure every synthetic monitor has the correct AMD portal-* tag
+11	Maintain the shared Dynatrace server/change tracker
+12	Obtain non-production access needed to practice RUM configuration
+13	Understand application-level vs site-level RUM
+14	Use RUM/user sessions for individual-user issues
+15	Use host/resource dashboards for application-wide performance issues
+16	Regularly review Dynatrace Problems and investigate persistent problems
+The overall message of the two meetings
+
+The first file teaches “how Dynatrace monitoring is configured” — synthetic monitors, dashboard tags, RUM, application detection, and monitoring modes.
+
+The second file turns that into “how we operate Dynatrace” — onboarding servers, firewall/OneAgent installation, production approvals, enabling/disabling monitoring, troubleshooting, and deciding when a Dynatrace problem actually needs escalation.
+
+So if you're using these meetings to learn your responsibilities, I'd think of the workflow as:
+
+Server/application change → approval → firewall → OneAgent → Dynatrace configuration → enable monitoring → validate → tracker → ongoing dashboard/problem monitoring → troubleshoot/escalate when needed.
