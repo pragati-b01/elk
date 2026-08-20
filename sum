@@ -1,41 +1,123 @@
-Hi Team,
+Azure Blob Storage SFTP supports restricting an SFTP local user to a specific directory within a container, so you can keep your existing single-container structure and give each user access only to their assigned folder. Microsoft specifically documents directory-level access using ACLs and SFTP local-user permission scopes. 
+                
 
-Thank you all for your time and valuable feedback during the OpenTelemetry design review.
+For example, if your container is:
 
-Below is a summary of the review comments and the planned actions. I've also indicated which items will be addressed immediately and which are planned for future phases.
+mycontainer/
+├── CustomerA/
+├── CustomerB/
+├── CustomerC/
+└── CustomerD/
 
-### Immediate Actions
 
-* Add standard documentation throughout the OpenTelemetry package, including:
+You can configure:
 
-  * File-level header comments.
-  * Method-level comments.
-  * Inline comments for complex logic.
-  * Comments explaining the collector flow, MSMQ usage, WCF-specific implementation, and configuration where applicable.
-* Add appropriate comments in the consuming applications (Startup, Global.asax, WCF configuration, etc.) to explain the instrumentation setup.
-* Remove unnecessary `try-catch` blocks where exceptions are only caught and rethrown, allowing consuming applications to handle logging.
-* Update the OpenTelemetry NuGet package from **v1.15** to **v1.17** once it becomes available and incorporate the agreed code improvements during that update.
-* Continue the rollout for the Eligibility Verification application after the PA Portal implementation and production validation.
-* Continue implementing performance reports to identify long-running stored procedures, slow service calls, and transaction duration trends.
-* Prepare a Wiki/implementation guide describing the different integration approaches for MVC/Web API and WCF applications to simplify future onboarding and maintenance.
+userA → only CustomerA
+userB → only CustomerB
+userC → only CustomerC
 
-### Planned for Future Phases
+Azure Portal steps
 
-* Evaluate pushing telemetry data to **ELK** and/or **Dynatrace** to enable near real-time reporting and monitoring.
-* Evaluate real-time alerting for performance issues based on the captured telemetry.
-* Define a database retention and purge strategy after sufficient production data has been collected and retention requirements are finalized.
-* Continue expanding the instrumentation to the remaining portal applications after the current implementation has been stabilized in production.
+1. Sign in to the Azure Portal and open your Storage Account.
+2. In the left menu, go to Settings → SFTP.
+	SFTP requires the storage account to have Hierarchical Namespace (HNS) enabled. 
+                
+3. Make sure SFTP is enabled.
+4. Go to Data storage → Containers.
+5. Open your existing container. For example:
+	mycontainer
 
-### Review Notes
+6. Verify that the required folders already exist, for example:
+	mycontainer/
+		CustomerA/
+		CustomerB/
+		CustomerC/
 
-* Security scanning has been completed successfully.
-* Performance testing (before and after instrumentation) showed no significant performance impact.
-* The current implementation follows the design principles discussed during the review:
+7. Do not create separate containers. You can continue using the same container because Azure SFTP supports directory-level permissions. 
+                
+8. Go back to the storage account and select SFTP → Local users.
+9. Select Add local user.
+10. Enter the username. For example:
+	customerauser
 
-  * Instrumentation can be enabled or disabled through configuration.
-  * Instrumentation should not impact existing application functionality.
-  * WCF services require additional configuration compared to MVC/Web API applications.
+11. Under Authentication methods, select the authentication method you want:
+	SSH password
+	SSH public key
+	or both
+12. Find Home directory / Home (landing) directory.
+	Enter the path to the user's folder using:
+	<container>/<folder>
 
-Please let me know if I missed any review comments or if any of the above should be updated.
+	For example:
+	```text
+	mycontainer/CustomerA
+    ```
 
-Thank you.
+  The Azure Portal expects the container and directory path in this format; it is not a folder-selection dropdown. 
+                
+13. Go to the Permissions section.
+    Select the container:
+     mycontainer
+
+14. Important: Do not give the user broad read/list/write access to the entire container if your objective is folder isolation. Azure's SFTP   authorization model allows directory-level access through ACL authorization. 
+                
+15. Enable ACL authorization for the local user, if the option is available in your portal.
+16. Configure the user's permission scope for the required directory. For example, for customerauser:
+	Container: mycontainer
+	Directory: CustomerA
+	Permissions: Read / Write / List / Create / Delete
+
+17. Select only the permissions that the user actually needs.
+
+	For a user who only needs to download files, use the minimum required permissions rather than giving write/delete access.
+	Save the local user.
+	Repeat the process for the other users. For example:
+	| SFTP User | Home Directory | Access |
+	|---|---|---|
+	| `customerauser` | `mycontainer/CustomerA` | CustomerA only |
+	| `customerbuser` | `mycontainer/CustomerB` | CustomerB only |
+	| `customercuser` | `mycontainer/CustomerC` | CustomerC only |
+
+18. Check the directory ACLs. For SFTP directory-level authorization, the user needs appropriate permissions through the 
+	directory hierarchy. In particular, execute (x) permission is required on the container root and directories leading 
+	to the user's target directory. 
+                
+19. Be careful when modifying ACLs. Azure currently has specific SFTP ACL limitations, and Microsoft notes that additional/default 
+	ACL entries in  the  SFTP access path can cause Permission denied errors. 
+                
+20. Test each account with an SFTP client such as WinSCP or FileZilla.
+	For customerauser, verify that the user can:
+	/CustomerA
+
+	and can upload/download files there as intended.
+	Then verify that the user cannot access:
+	/CustomerB
+	/CustomerC
+	/CustomerD
+
+21. Also test that the user cannot navigate back to the container root and browse the other folders.
+	Do not give the user container-wide permissions simply to make the SFTP connection work. That is a common configuration mistake because container-level permissions apply to all directories/subdirectories in that container. For granular directory access, use ACL authorization. 
+                
+	Recommended configuration
+
+	For your scenario, I would use this structure:
+
+	Storage Account
+	└── mycontainer
+		├── CustomerA
+		├── CustomerB
+		├── CustomerC
+		└── CustomerD
+
+
+	And configure:
+
+	SFTP Local User: customerauser
+	Home Directory: mycontainer/CustomerA
+	ACL: CustomerA
+	Permissions: r/w/l/c/d as required
+
+
+22. The key point is that the Home Directory alone should not be treated as the security boundary. Use the SFTP local-user permission scope/ACL configuration to enforce the directory restriction. Azure documents ACLs specifically as the mechanism for restricting a user's access to a particular directory while preventing access to other directories in the same container. 
+
+Reference: https://learn.microsoft.com/en-us/azure/storage/blobs/secure-file-transfer-protocol-support-authorize-access?utm_source=chatgpt.com&tabs=azure-portal
