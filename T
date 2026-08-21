@@ -1,0 +1,377 @@
+Absolutely. We will forget cleandocuments and the shared-folder design and document only the configuration you already have, based on your screenshot and the values you confirmed.
+Your confirmed configuration is:
+
+User	User ID	Required folder	Access
+user1	1000	/userhome/user1folder	RWX only
+pgaddam2	1001	/userhome/pgaddam2	RWX only
+user3	1002	/userhome/user3folder	RWX only
+
+Azure's current documentation confirms that UserId is the ID used when changing directory ownership with chown, and that ACL authorization can be used to restrict each local user to a particular directory. 
+M
+Microsoft Learn
++1
+1. First: verify the existing configuration
+Do not make additional changes yet.
+Connect using your administrative SFTP account:
+
+sftp admin@<storage-account>.blob.core.windows.net
+
+Then:
+ls
+cd userhome
+ls -l
+
+You should see your existing directories.
+Then run:
+
+ls -ld user1folder
+ls -ld pgaddam2
+
+If user3folder has already been created:
+ls -ld user3folder
+
+The important thing is to record the actual owner and group IDs before changing anything.
+For example, you want ultimately to see approximately:
+
+user1folder   owner=1000
+pgaddam2      owner=1001
+user3folder   owner=1002
+
+The exact display format can vary by SFTP client.
+2. Correct the ownership
+Based on the IDs you confirmed, the commands are:
+user1
+chown 1000 user1folder
+
+pgaddam2
+chown 1001 pgaddam2
+
+user3
+chown 1002 user3folder
+
+Important: Your screenshot appears to contain a chown 1002 associated with pgaddam2. That is not correct according to the IDs you subsequently confirmed. pgaddam2 is 1001.
+Microsoft documents chown specifically for changing the owning local user by User ID. 
+M
+Microsoft Learn
+
+3. Set private-folder permissions
+For each user's private directory:
+user1
+chmod 700 user1folder
+
+pgaddam2
+chmod 700 pgaddam2
+
+user3
+chmod 700 user3folder
+
+700 means:
+Owner   = RWX
+Group   = ---
+Other   = ---
+
+Therefore:
+/userhome/user1folder
+    owner 1000
+    RWX    user1 only
+
+/userhome/pgaddam2
+    owner 1001
+    RWX    pgaddam2 only
+
+/userhome/user3folder
+    owner 1002
+    RWX    user3 only
+
+This is consistent with Azure's ACL model, where the owning user, owning group, and other permissions are supported for local-user authorization. Named-user ACL entries are not currently supported. 
+M
+Microsoft Learn
+4. Configure /userhome for traversal
+This is an important part of the setup.
+The users need to be able to traverse /userhome to reach their own directory, but they should not receive read/list access to the contents of /userhome.
+
+Conceptually, the required permission is:
+
+/userhome
+    Execute (X)
+
+not:
+/userhome
+    Read
+    Write
+    Execute
+
+Azure specifically documents that a local user needs Execute permission on the container root and each directory in the path leading to the file/directory being accessed. 
+M
+Microsoft Learn
+Important
+Do not blindly run:
+chmod 701 userhome
+
+until you have inspected the current ACL/permissions and confirmed which identity needs the execute permission.
+Your screenshot indicates that you already made a parent-directory permission change. We should verify the result rather than overwrite it.
+
+From the admin session, run:
+
+ls -ld userhome
+
+and record the result.
+5. Verify each user's Azure local-user configuration
+Go to:
+Storage Account → SFTP → Local users
+
+Check user1.
+
+You need to verify:
+
+Username:
+user1
+
+User ID:
+1000
+
+Allow ACL authorization:
+Enabled
+
+Home directory:
+userhome/user1folder
+
+Then check pgaddam2:
+Username:
+pgaddam2
+
+User ID:
+1001
+
+Allow ACL authorization:
+Enabled
+
+Home directory:
+userhome/pgaddam2
+
+Then check user3:
+Username:
+user3
+
+User ID:
+1002
+
+Allow ACL authorization:
+Enabled
+
+Home directory:
+userhome/user3folder
+
+Azure supports a local user's home directory as a container/directory path, such as container/directory. 
+M
+Microsoft Learn
+6. Check the container permission scopes
+This is one of the most important validation steps.
+For each user:
+
+Storage Account → SFTP → Local users → Edit user → Permissions
+
+Make sure you understand exactly what permissions have been assigned to the userhome container.
+
+Azure states that container permissions apply to all directories and subdirectories in that container. If a user already has sufficient container-level permissions, ACLs cannot be used to take that access away. 
+M
+Microsoft Learn
++1
+
+Therefore, if your goal is:
+
+user1 can access only user1folder
+you must make sure user1 isn't already being granted broad container permissions that allow access to the other folders.
+This is potentially more important than chmod 700.
+
+7. Verify user1
+Disconnect the administrator:
+exit
+
+Connect as user1:
+sftp user1@<storage-account>.blob.core.windows.net
+
+Then:
+pwd
+ls
+
+Expected:
+/userhome/user1folder
+
+or the equivalent home-directory representation used by the SFTP client.
+The directory should be accessible.
+
+8. Test user1 write access
+Run:
+put test-user1.txt
+
+Expected:
+Upload successful
+
+Then:
+ls
+
+You should see:
+test-user1.txt
+
+Then:
+get test-user1.txt
+
+Expected:
+Download successful
+
+9. Test user1 cannot access pgaddam2
+Try:
+cd ../pgaddam2
+
+Expected:
+Permission denied
+
+Also test:
+cd ../user3folder
+
+Expected:
+Permission denied
+
+Do not consider the configuration validated merely because the user starts in the correct home directory.
+The negative tests are important because Azure evaluates container permissions before ACLs. 
+M
+Microsoft Learn
+
+10. Test pgaddam2
+Disconnect:
+exit
+
+Connect:
+sftp pgaddam2@<storage-account>.blob.core.windows.net
+
+Verify:
+pwd
+ls
+
+Expected home:
+/userhome/pgaddam2
+
+Create a test file:
+put test-pgaddam2.txt
+
+Then:
+get test-pgaddam2.txt
+
+Both should succeed.
+11. Test pgaddam2 isolation
+Try:
+cd ../user1folder
+
+Expected:
+Permission denied
+
+Then:
+cd ../user3folder
+
+Expected:
+Permission denied
+
+This proves pgaddam2 cannot access the other users' folders.
+12. Test user3
+Connect:
+sftp user3@<storage-account>.blob.core.windows.net
+
+Verify:
+pwd
+ls
+
+Expected:
+/userhome/user3folder
+
+Test write:
+put test-user3.txt
+
+Test download:
+get test-user3.txt
+
+Both should succeed.
+13. Test user3 isolation
+Try:
+cd ../user1folder
+
+Expected:
+Permission denied
+
+Then:
+cd ../pgaddam2
+
+Expected:
+Permission denied
+
+14. Final expected configuration
+Your final layout should be:
+Storage Account
+│
+└── userhome
+    │
+    ├── user1folder
+    │      Owner: 1000
+    │      Mode:  700
+    │
+    ├── pgaddam2
+    │      Owner: 1001
+    │      Mode:  700
+    │
+    └── user3folder
+           Owner: 1002
+           Mode:  700
+
+And:
+user1
+  │
+  └── user1folder
+       RWX
+
+pgaddam2
+  │
+  └── pgaddam2
+       RWX
+
+user3
+  │
+  └── user3folder
+       RWX
+
+The intended access matrix is:
+Test	user1	pgaddam2	user3
+Own folder	RWX	RWX	RWX
+user1folder	RWX	Denied	Denied
+pgaddam2	Denied	RWX	Denied
+user3folder	Denied	Denied	RWX
+
+15. Very important checks before declaring success
+Check these four things:
+User IDs
+user1 = 1000
+pgaddam2 = 1001
+user3 = 1002
+Ownership
+user1folder → 1000
+pgaddam2 → 1001
+user3folder → 1002
+Private-folder permissions
+Each folder → 700
+Container permission scopes
+Make sure the users haven't been given broad permissions that bypass the ACL isolation.
+That last item is particularly important: Azure says ACLs are evaluated only when the local user doesn't already have the required container-level permission. 
+M
+Microsoft Learn
+Also check that there are no Default ACLs or additional named ACL entries in the access path. Azure's current known-issues documentation says those aren't supported for SFTP and can result in Permission denied. 
+M
+Microsoft Learn
+
+Microsoft references
+Azure SFTP — Connect using an SFTP client
+Azure SFTP — Authorize access and configure local users
+Azure SFTP — ACLs and permissions
+Azure SFTP — Known issues and limitations
+One correction to my earlier answers: I would not change /userhome or any other permission with a new chmod command until you show me the output of ls -ld userhome, ls -ld user1folder, and ls -ld pgaddam2. That lets us evaluate exactly what your screenshot changes produced instead of guessing.
+
+M
+Sources
