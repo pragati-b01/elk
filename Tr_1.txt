@@ -1,0 +1,444 @@
+LMigrating to Azure Blob Storage
+
+Overview
+The team discussed transitioning file management from GlobalScape to Azure Blob Storage to reduce costs and modernize the claim forwarding process.
+System Architecture
+Sanjay explained the current state where files arrive via APIs, SFTP, or EDISFTP.com and land in a Dropbox folder. The proposed transition involves replacing the expensive GlobalScape system with Azure Blob Storage.
+•  The current architecture uses a Jump Server and Block Storage for processing.
+•  Files will be moved from the internet-facing Blob Storage to the DCS processing server via an internal endpoint using a Microsoft Express Route (three 1GB lines).
+•  A .NET poller will be implemented to pull files from the Blob Storage every five minutes, rather than using an event-driven model due to limitations with Event Hub.
+Data Flow Logic
+Sanjay outlined how files will be handled during both upload and download phases to ensure security and efficiency.
+•  Upload Process: An Azure Function will trigger upon file upload, moving files to a specific directory within the Blob Storage. A poller will then transfer these to the DCS server.
+•  Download Process: To maintain security, files will be kept in a private endpoint. When a user logs in, an Azure Function will identify their Submitter ID and copy relevant files to their public endpoint for download.
+•  Security: Because Blob Storage does not integrate with Active Directory, the team must eventually define a process for delivering SSH keys to individual submitters.
+Project Implementation
+The technical focus of the current POC is on the file movement logic rather than the full onboarding process.
+•  Pragati and Jack are tasked with updating existing documentation and diagrams to reflect the move to Azure Blob Storage.
+•  The new diagrams must show that DCS pulls data from the storage rather than the storage pushing it.
+•  How will the system handle large volumes of files, such as hundreds of files for a single corporate user, during the login-triggered copy process?
+
+Action Items
+• [] @Pragati - Copy incoming files from the internet-facing blob storage Dropbox (project folder used by the service account) to the private endpoint staging area, removing them from the blob storage Dropbox and organizing them into user-specific directories based on file-name intelligence.
+• [] @Pragati - Submit a firewall request to allow communication between the claim-processing server and the block storage/private endpoint once the end-to-end file-flow has been verified as working.
+• [] @Pragati - Draw diagrams that capture the described file upload, processing, and download flow (including blob storage, private endpoint, SFTP, and DCS) so the team can validate understanding and identify gaps.
+• [] @Pragati - Review the existing process document describing the current GlobalScape/SFTP-based workflow, then update it to replace the green-box GlobalScape component with Azure Blob Storage and incorporate the new pull/poller behavior, preparing it for discussion in the follow-up meeting on Friday.
+• [] Update the shared architecture diagram to show the blob-storage Dropbox location and the path from blob storage to the DCS processing server, including the intended use of the private endpoint staging area.
+• [] Coordinate and schedule a follow-up meeting on Friday morning to review the updated documentation and diagrams.
+
+Outline
+Current File Ingestion Process
+• Approximately 300,000 files are received daily from various internet-based sources and APIs.
+• Files currently land in a common "Dropbox" folder via global scale sites like sftp.dmsp.gov and mcohub.tsp.com.
+• The system is transitioning to using EDISFTP.com, which was rolled out in May and will eventually host all 2,000 to 3,000 providers.
+• File names are intelligent and contain specific metadata, such as the submitted ID and HIPAA transaction line, to identify the sender and content.
+Claim Forwarding and Processing
+• Files move from a staging area/private endpoint to a processing server in DCS.
+• A firewall request must be submitted to allow communication between the processing server and block storage.
+• Once processed, response files are placed in a folder within the block storage for retrieval.
+• The current claim forwarding process is designed to be transparent and invisible to the end user once established.
+Submitter Onboarding and Provisioning
+• New providers undergo an onboarding process where they are assigned a specific number used for the FTP process.
+• This process populates a submitter database and integrates users into Active Directory groups.
+• Currently, the system provisions accounts in GlobalScape, but this will change with the move to Azure Blob Storage.
+• For the Azure transition, the team needs to programmatically create block storage accounts and manage users within their directory.
+Transition to Azure Blob Storage
+• HHS aims to move from GlobalScape to Azure Blob Storage to reduce costs from $200,000 per year to $10,000 per year.
+• The move focuses on replacing complex Managed File Transfer (MFT) features that are 90% unused by simpler storage solutions.
+• Authentication for block storage will use SSH keys rather than Active Directory integration.
+• The Proof of Concept (POC) is strictly technical and does not include the delivery method for SSH keys.
+Proposed Technical Architecture
+• The proposed architecture uses an Azure function triggered by file uploads or downloads to manage file movement.
+• To maintain security, DCS will pull files from the internet-facing blob storage via an internal endpoint using Microsoft ExpressRoute (MPLS).
+• A .NET poller will run every five minutes to pick up files from the blob storage Dropbox and drop them into DCS.
+• A second poller will handle responses by picking up processed files and dropping them into a private endpoint for specific users.
+Implementation Tasks and Next Steps
+• Pragati is tasked with driving the application-specific details while working with Jack on the technical implementation.
+• The team must update existing documentation to reflect the replacement of GlobalScape with Azure Blob Storage.
+• The new diagrams must show DCS pulling data from blob storage rather than blob storage pushing it to DCS.
+• A follow-up meeting is scheduled for Friday morning to review updated diagrams and progress.
+
+ Based on the KT transcript, the intended **future-state Azure Blob Storage flow** is below. I’ve kept the terminology and direction of the flow from the discussion rather than adding unsupported components. 
+
+## 1. High-level flow
+
+```text
+                 EXTERNAL / INTERNET
+                        |
+                        | 1. Upload file
+                        v
+              +----------------------+
+              | Azure Blob Storage   |
+              | Public Endpoint      |
+              |                      |
+              | User-specific area   |
+              +----------+-----------+
+                         |
+                         | 2. File lands in
+                         |    Dropbox / staging
+                         v
+              +----------------------+
+              | Azure Blob Storage   |
+              | Private Endpoint     |
+              |                      |
+              | Parking / Dropbox     |
+              +----------+-----------+
+                         ^
+                         |
+                         | 3. Poll every 5 minutes
+                         |    (pull)
+                         |
+              +----------+-----------+
+              | .NET Poller          |
+              | running internally   |
+              +----------+-----------+
+                         |
+                         | 4. SFTP push
+                         v
+              +----------------------+
+              | DCS Processing Server|
+              |                      |
+              | /home/dropbox/common |
+              +----------+-----------+
+                         |
+                         | 5. Existing
+                         |    claim processing
+                         v
+              +----------------------+
+              | Claim Processing     |
+              | Existing System      |
+              +----------+-----------+
+                         |
+                         | 6. Response file
+                         v
+              +----------------------+
+              | DCS Delivery Folder  |
+              +----------+-----------+
+                         |
+                         | 7. Second .NET
+                         |    poller
+                         v
+              +----------------------+
+              | Azure Blob Storage   |
+              | Private Endpoint     |
+              | User-specific folder |
+              +----------+-----------+
+                         |
+                         | 8. User login
+                         |    triggers check
+                         v
+              +----------------------+
+              | Azure Function       |
+              | Login Event          |
+              +----------+-----------+
+                         |
+                         | 9. Copy files for
+                         |    user to public
+                         |    download area
+                         v
+              +----------------------+
+              | Azure Blob Storage   |
+              | User Download Folder |
+              | Public Endpoint      |
+              +----------+-----------+
+                         |
+                         | 10. Download
+                         v
+                    END USER
+```
+
+## 2. Detailed sequence diagram
+
+This is the version I would recommend using in the POC/design document:
+
+```text
+User/Provider
+     |
+     | Upload file
+     v
+Azure Blob Storage - Public Endpoint
+     |
+     | File arrives
+     v
+Blob Dropbox / Staging Area
+     |
+     | File is available internally
+     |
+     | Poll every 5 minutes
+     v
+.NET Poller
+     |
+     | Pull file from Blob
+     |
+     | SFTP
+     v
+DCS Processing Server
+     |
+     | /home/dropbox/common
+     |
+     | Existing folder-monitoring process
+     v
+Claim Processing System
+     |
+     | Process file
+     |
+     | Generate response
+     v
+DCS Response / Delivery Folder
+     |
+     | Poll for response files
+     v
+.NET Response Poller
+     |
+     | Read filename
+     | Determine submitter/user
+     |
+     | Push/copy response
+     v
+Azure Blob Storage - Private Endpoint
+     |
+     | User-specific private folder
+     |
+     | User logs in
+     v
+Azure Function
+     |
+     | Identify submitter/user
+     | Check private folder
+     |
+     | If files exist:
+     | Copy files to user's
+     | public download folder
+     v
+Azure Blob Storage - Public Endpoint
+     |
+     | User downloads file
+     v
+User/Provider
+```
+
+## 3. Important direction of communication
+
+One of the most important points from the KT is that **DCS should not be exposed to the Internet**.
+
+The intended direction is:
+
+```text
+Internet
+   |
+   v
+Blob Storage
+   ^
+   |
+   | DCS PULLS files
+   |
+DCS / Processing Server
+```
+
+So **Blob Storage does not directly push files into DCS over the Internet**. The internal .NET poller retrieves the files from Blob Storage. The discussion specifically describes using the internal/private endpoint and the Microsoft ExpressRoute connection for this traffic. 
+
+## 4. Upload path
+
+```text
+Provider
+   |
+   | Upload
+   v
+Public Blob Endpoint
+   |
+   v
+Dropbox / Staging
+   |
+   | .NET Poller
+   | every 5 minutes
+   v
+Private/Internal access
+   |
+   v
+DCS
+   |
+   v
+/home/dropbox/common
+```
+
+The filename is important because it contains information that identifies the submitter and the content/transaction, so the downstream process can determine where the file belongs. 
+
+## 5. Processing path
+
+Once the file reaches DCS:
+
+```text
+/home/dropbox/common
+        |
+        v
+Existing folder monitor
+        |
+        v
+Claim Forwarding
+        |
+        v
+Existing Claim Processing
+```
+
+The meeting indicates that the existing processing itself is **not the focus of the change**. The main change is replacing the GlobalScape/MFT portion with Azure Blob Storage and the associated file movement mechanisms. 
+
+## 6. Response/download path
+
+The response direction is essentially the reverse:
+
+```text
+Claim Processing
+       |
+       v
+DCS Response Folder
+       |
+       | .NET Poller
+       v
+Azure Blob Private Endpoint
+       |
+       | Determine user from filename
+       v
+User-specific private folder
+       |
+       | User logs in
+       v
+Azure Function
+       |
+       | Check for downloadable files
+       v
+User's Public Download Folder
+       |
+       | Download
+       v
+Provider
+```
+
+A key design point from the meeting is that response files should remain in the **private endpoint/parking area** rather than sitting on the public endpoint indefinitely. When the user logs in, the Azure Function checks whether that user has files available and copies them to the location from which the user can download them. 
+
+## 7. Event-driven vs. polling
+
+The KT specifically distinguishes the two mechanisms:
+
+### Upload → DCS
+
+**Polling**
+
+```text
+Blob Storage
+     |
+     | Every 5 minutes
+     v
+.NET Poller
+     |
+     v
+DCS
+```
+
+The reason given is that DCS should not receive direct Internet traffic. The internal system pulls the files from Blob Storage. 
+
+### DCS → Blob
+
+Also effectively **polling**:
+
+```text
+DCS Response Folder
+        |
+        | Scheduled poll
+        v
+.NET Poller
+        |
+        v
+Blob Private Endpoint
+```
+
+### User login → download preparation
+
+**Event-driven**
+
+```text
+User Login
+    |
+    v
+Login Event
+    |
+    v
+Azure Function
+    |
+    v
+Check private folder
+    |
+    v
+Copy available files
+    |
+    v
+Public download folder
+```
+
+The meeting also discusses Event Hub versus a message/event-bus approach. The team chose polling for the POC/simplified solution because the current Event Hub setup does not provide the desired message-driven behavior. 
+
+## 8. Recommended architecture diagram labels
+
+For your actual diagram, I would use these boxes:
+
+```text
+[External Submitters / Providers]
+              |
+              v
+[Azure Blob Storage]
+[Public Endpoint]
+              |
+              v
+[Dropbox / Staging]
+              ^
+              |
+        [5-Min Poller]
+        [.NET Service]
+              |
+              v
+[Private Endpoint / Internal Network]
+              |
+              v
+[DCS Processing Server]
+[/home/dropbox/common]
+              |
+              v
+[Existing Claim Processing]
+              |
+              v
+[DCS Response Folder]
+              |
+              ^
+        [Response Poller]
+        [.NET Service]
+              |
+              v
+[Azure Blob Storage]
+[Private Endpoint]
+              |
+              v
+[User-Specific Private Folder]
+              ^
+              |
+        [User Login Event]
+              |
+              v
+[Azure Function]
+              |
+              v
+[User Public Download Folder]
+              |
+              v
+[External Submitter / Provider]
+```
+
+### The key message for the architecture review
+
+**Upload:** Provider → Blob → internal .NET poller → DCS
+
+**Processing:** DCS → existing claim-processing system → response folder
+
+**Response:** DCS response folder → .NET poller → Blob private/user folder
+
+**Download:** User login → Azure Function → copy response to public download location → user downloads
+
+This matches the core flow described in the KT session, including the important requirement that **DCS pulls from Blob Storage rather than Blob Storage pushing into DCS across the Internet**. 
