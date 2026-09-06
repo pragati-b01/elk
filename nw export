@@ -1,56 +1,383 @@
-param(
-[ValidateSet('Prod','Test','Regression')][string]$Environment='Test',
-[string]$Index='portalweb-*',
-[datetime]$StartDate,
-[datetime]$EndDate,
-[string]$OutputFile='Export.csv',
-[int]$BatchSize=5000
+ALTER PROC [dbo].[PerfData_spUpdateTransaction_PerformanceData_Table]
+(
+    @cutoffTime INT,
+    @transactionThreshold INT
 )
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
 
-$Hosts=@{
- Prod='http://prod-elastic:9200'
- Test='http://test-elastic:9200'
- Regression='http://regr-elastic:9200'
-}
-$ElasticHost=$Hosts[$Environment]
-$searchAfter=$null
-$first=$true
-$total=0
+    DECLARE @CutoffDuration DATETIME;
 
-do{
- $body=@{
-   size=$BatchSize
-   track_total_hits=$true
-   sort=@(
-     @{'@timestamp'=@{order='asc';format='strict_date_optional_time_nanos'}},
-     @{_id=@{order='asc'}}
-   )
-   fields=@(@{field='*';include_unmapped=$true})
-   _source=$false
-   query=@{
-     range=@{
-       '@timestamp'=@{
-         gte=$StartDate.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
-         lte=$EndDate.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
-       }
-     }
-   }
- }
- if($searchAfter){$body.search_after=$searchAfter}
- $resp=Invoke-RestMethod -Method Post -Uri "$ElasticHost/$Index/_search" -Body ($body|ConvertTo-Json -Depth 20) -ContentType 'application/json'
- $hits=$resp.hits.hits
- if(!$hits -or $hits.Count -eq 0){break}
- $rows=foreach($h in $hits){
-   $r=[ordered]@{}
-   foreach($p in $h.fields.PSObject.Properties){
-     if($p.Value -is [array]){$r[$p.Name]=$p.Value -join ';'}else{$r[$p.Name]=$p.Value}
-   }
-   [pscustomobject]$r
- }
- if($first){$rows|Export-Csv $OutputFile -NoTypeInformation;$first=$false}else{$rows|Export-Csv $OutputFile -NoTypeInformation -Append}
- $total+=$hits.Count
- Write-Progress -Activity 'Exporting' -Status "$total rows exported"
- $searchAfter=$hits[-1].sort
-}while($true)
+    SET @CutoffDuration =
+        DATEADD(MINUTE, -@cutoffTime, GETDATE());
 
-Write-Host "Completed. Exported $total rows to $OutputFile"
+
+    /*==============================================================
+      Clean up temp tables
+    ==============================================================*/
+
+    IF OBJECT_ID('tempdb..#TraceAgg') IS NOT NULL
+        DROP TABLE #TraceAgg;
+
+    IF OBJECT_ID('tempdb..#descendants') IS NOT NULL
+        DROP TABLE #descendants;
+
+
+    /*==============================================================
+      STEP 1
+      Get only the PerformanceData rows that actually need processing.
+
+      IMPORTANT:
+      BeginTime is included here so we don't have to scan
+      PerformanceData again later to find MIN(BeginTime).
+    ==============================================================*/
+
+    SELECT
+        P.TransactionType,
+        P.TraceId,
+        P.SpanId,
+        P.ParentSpanId,
+        P.HttpUrl,
+        P.DbStatementTrimmed,
+        P.IsException,
+        P.ExternalServiceName,
+        P.BeginTime
+    INTO #descendants
+    FROM dbo.PerformanceData AS P
+    WHERE P.IsTransClassUpdated = 0
+      AND P.CreateDateTime <= @CutoffDuration
+      AND
+      (
+            P.TransactionType <> 'I'
+            OR P.TransactionType IS NULL
+      );
+
+
+    /*==============================================================
+      Index temp table.
+
+      TraceId is used for GROUP BY and joins.
+      BeginTime is used to find the first record per trace.
+    ==============================================================*/
+
+    CREATE CLUSTERED INDEX IX_descendants_TraceId_BeginTime
+        ON #descendants
+        (
+            TraceId,
+            BeginTime
+        );
+
+
+    /*==============================================================
+      STEP 2
+      Aggregate each TraceId.
+
+      We are now working against #descendants rather than scanning
+      the potentially huge PerformanceData table repeatedly.
+    ==============================================================*/
+
+    SELECT
+        P.TraceId,
+
+        MAX
+        (
+            CASE
+                WHEN ISNULL(P.IsException, 0) = 1
+                    THEN 1
+                ELSE 0
+            END
+        ) AS HasException,
+
+        MAX
+        (
+            CASE
+                WHEN R.OperationType = 'W'
+                    THEN 1
+                ELSE 0
+            END
+        ) AS HasWrite,
+
+        MAX
+        (
+            CASE
+                WHEN R.OperationType = 'R'
+                     OR
+                     (
+                         P.TransactionType = 'D'
+                         AND R.StoredProcedureNameTrimmed IS NULL
+                     )
+                    THEN 1
+                ELSE 0
+            END
+        ) AS HasRead,
+
+        MAX
+        (
+            CASE
+                WHEN P.ExternalServiceName IS NOT NULL
+                    THEN 1
+                ELSE 0
+            END
+        ) AS HasExternal,
+
+        MAX
+        (
+            CASE
+                WHEN P.TransactionType = 'A'
+                     AND P.ExternalServiceName IS NULL
+                    THEN 1
+                ELSE 0
+            END
+        ) AS HasInternal,
+
+        SUM
+        (
+            CASE
+                WHEN P.TransactionType = 'A'
+                    THEN 1
+                ELSE 0
+            END
+        ) AS APICalls,
+
+        SUM
+        (
+            CASE
+                WHEN P.TransactionType = 'D'
+                    THEN 1
+                ELSE 0
+            END
+        ) AS DBCalls
+
+    INTO #TraceAgg
+    FROM #descendants AS P
+
+    LEFT JOIN dbo.RefData AS R
+        ON P.DbStatementTrimmed =
+           R.StoredProcedureNameTrimmed
+
+    LEFT JOIN dbo.RefExternalServices AS E
+        ON P.HttpUrl =
+           E.ExternalServiceName
+
+    GROUP BY
+        P.TraceId;
+
+
+    /*==============================================================
+      Index aggregated trace data.
+    ==============================================================*/
+
+    CREATE UNIQUE CLUSTERED INDEX IX_TraceAgg_TraceId
+        ON #TraceAgg
+        (
+            TraceId
+        );
+
+
+    /*==============================================================
+      STEP 3
+      Update the first W transaction record for every trace.
+
+      The old procedure scanned PerformanceData again to calculate:
+
+          MIN(BeginTime)
+
+      We now calculate it from #descendants.
+    ==============================================================*/
+
+    BEGIN TRY
+
+        BEGIN TRANSACTION;
+
+
+        ;WITH FirstTraceRecord AS
+        (
+            SELECT
+                TraceId,
+                MIN(BeginTime) AS MinBeginTime
+            FROM #descendants
+            GROUP BY TraceId
+        )
+        UPDATE P
+        SET
+            P.ModifiedDateTime = GETDATE(),
+            P.ModifiedUserId = 'Batch',
+
+            P.TransClass =
+                CASE
+
+                    /* CASE EXCEPTION */
+                    WHEN A.HasException = 1
+                        THEN 5
+
+                    /* CASE TRANSACTION SERVICE */
+                    WHEN A.APICalls + A.DBCalls >= @transactionThreshold
+                        THEN 6
+
+                    /* CASE EXTERNAL SERVICE */
+                    WHEN A.HasExternal = 1
+                        THEN 5
+
+                    /* CASE DB WRITE */
+                    WHEN A.HasWrite = 1
+                        THEN 4
+
+                    /* CASE DB READ */
+                    WHEN A.HasRead = 1
+                        THEN 3
+
+                    /* CASE INTERNAL SERVICE / API */
+                    WHEN A.HasInternal = 1
+                        THEN 2
+
+                    /* CASE OTHER WEB SERVER CALLS */
+                    ELSE 1
+
+                END,
+
+            P.TransactionType =
+                CASE
+                    WHEN A.HasException = 1
+                        THEN 'E'
+                    ELSE P.TransactionType
+                END
+
+        FROM dbo.PerformanceData AS P
+
+        INNER JOIN #TraceAgg AS A
+            ON P.TraceId = A.TraceId
+
+        INNER JOIN FirstTraceRecord AS F
+            ON P.TraceId = F.TraceId
+           AND P.BeginTime = F.MinBeginTime
+
+        WHERE P.TransClass = 0
+          AND P.TransactionType = 'W';
+
+
+        /*==========================================================
+          STEP 4
+          Mark all rows belonging to processed traces.
+
+          Added IsTransClassUpdated = 0 so SQL Server doesn't
+          rewrite rows that are already marked.
+        ==========================================================*/
+
+        UPDATE P
+        SET
+            P.IsTransClassUpdated = 1
+        FROM dbo.PerformanceData AS P
+
+        INNER JOIN #TraceAgg AS A
+            ON P.TraceId = A.TraceId
+
+        WHERE P.IsTransClassUpdated = 0;
+
+
+        COMMIT TRANSACTION;
+
+    END TRY
+
+    BEGIN CATCH
+
+        IF @@TRANCOUNT > 0
+            ROLLBACK TRANSACTION;
+
+        THROW;
+
+    END CATCH;
+
+END;
+GO
+-------------------------
+CREATE NONCLUSTERED INDEX IX_PerformanceData_Unprocessed
+ON dbo.PerformanceData
+(
+    CreateDateTime,
+    TraceId
+)
+INCLUDE
+(
+    TransactionType,
+    IsException,
+    HttpUrl,
+    DbStatement,
+    BeginTime,
+    TransClass
+)
+WHERE IsTransClassUpdated = 0;
+
+
+
+CREATE NONCLUSTERED INDEX IX_RefExternalServices_ExternalServiceName
+ON dbo.RefExternalServices(ExternalServiceName);
+
+CREATE NONCLUSTERED INDEX IX_RefData_StoredProcedureName
+ON dbo.RefData(StoredProcedureName)
+INCLUDE (OperationType);
+
+
+CREATE UNIQUE CLUSTERED INDEX IX_TraceIds
+ON #TraceIds(TraceId);
+
+CREATE UNIQUE CLUSTERED INDEX IX_TraceAgg
+ON #TraceAgg(TraceId);
+
+CREATE INDEX IX_PerformanceData_Classification
+ON dbo.PerformanceData
+(
+    IsTransClassUpdated,
+    CreateDateTime,
+    TraceId
+)
+INCLUDE
+(
+    TransactionType,
+    BeginTime,
+    EndTime,
+    TraceId,
+    HttpUrl,
+    DbStatement,
+    IsException,
+    ExternalServiceName,
+    TransClass,
+    ModifiedDateTime,
+    ModifiedUserId
+);
+
+
+CREATE INDEX IX_PerformanceData_Unclassified
+ON dbo.PerformanceData
+(
+    CreateDateTime,
+    TraceId,
+    BeginTime
+)
+INCLUDE
+(
+    TransactionType,
+    HttpUrl,
+    DbStatement,
+    IsException,
+    ExternalServiceName,
+    TransClass
+)
+WHERE IsTransClassUpdated = 0;
+
+
+CREATE CLUSTERED INDEX IX_tdescendants_TraceId
+ON #tdescendants (TraceId);
+
+
+CREATE UNIQUE CLUSTERED INDEX IX_TraceAgg_TraceId
+ON #TraceAgg (TraceId);
+
+
+CREATE CLUSTERED INDEX IX_tdescendants_TraceId_BeginTime
+ON #tdescendants (TraceId, BeginTime);
+
+
+CREATE INDEX IX_PerformanceData_Trace_Updated
+ON dbo.PerformanceData (TraceId, IsTransClassUpdated);
