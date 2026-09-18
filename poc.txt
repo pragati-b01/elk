@@ -1,0 +1,542 @@
+* User uploads files to the Public Inbound SFTP location using their assigned SFTP credentials or SSH key.
+
+* Microsoft Defender scans the uploaded files, and the Azure Function processes the scan result and transfers approved files to the Private Inbound location using a Service Principal for Azure authentication.
+
+* The Inbound Poller connects to the Private Inbound SFTP location and retrieves the approved files using an SFTP user account with an SSH key or an appropriate service account (Need to decide on Azure authentication).
+
+* The Inbound Poller places the retrieved files in the Local Dropbox folder using the permissions of the Windows Service Account running the Poller.
+
+* The existing EDI process picks up files from the Local Dropbox folder for further processing using its existing EDI Service Account permissions.
+
+* DCS provides outbound files to the Outbound Poller using the existing DCS credentials and required file-transfer permissions.
+
+* The Outbound Poller transfers the outbound files to the Private Outbound SFTP location using an SFTP user account with an SSH key or an appropriate service account (Need to decide on Azure authentication).
+
+* An Azure Function transfers the files from the Private Outbound location to the Public Outbound location using a Service Principal.
+
+* The user retrieves the processed outbound files from the Public Outbound SFTP location using their assigned SFTP credentials or SSH key.
+-----------
+How does it know which files have already been downloaded?
+What happens if a file is partially uploaded when the Poller checks the folder?
+After successful download, do we move the file to an Archive/Processed folder, or maintain a processing/status mechanism?
+
+I would strongly favor moving the successfully downloaded file out of the pickup folder rather than relying only on filename tracking.
+
+Yes. Looking at this **end-to-end as a POC architecture**, there are several strong points, but also some important design questions that should be explicitly discussed before calling the flow production-ready.
+
+## 1. Overall POC flow
+
+The architecture separates the solution into clear security and processing boundaries:
+
+* **User-facing file transfer** is handled through the Public Inbound/Outbound SFTP locations.
+* **Microsoft Defender** provides malware scanning before files are allowed into the private processing area.
+* **Azure Functions** act as the controlled bridge between public and private storage zones.
+* **Private Inbound/Outbound locations** isolate files from direct user access to internal processing areas.
+* **Pollers** handle file movement between the Azure/private area and the existing on-premises environment.
+* **Local Dropbox and EDI** allow the existing EDI process to continue without major changes.
+* **Service accounts and SSH keys** provide application-to-application authentication rather than relying on individual user accounts.
+* The outbound path follows a similar controlled model in reverse.
+
+That separation is a **strong point for the POC**, especially because it allows the existing EDI process to remain largely unchanged.
+
+---
+
+# 2. User access and permissions
+
+### Questions to clarify
+
+* Who creates the user's SFTP account?
+* Is each user given an individual SFTP account, or is an account shared by a group/application?
+* Are users restricted to **only their assigned inbound/outbound folders**?
+* Can a user see files uploaded by other users?
+* Can a user delete or overwrite files?
+* Are users allowed to upload only, or upload/download/delete?
+* How are users removed or disabled when they leave the organization?
+* Is there an existing process for password/SSH-key rotation?
+* Is MFA required for the user-facing SFTP connection, or is authentication only through SSH key/password?
+* Is the Public Inbound SFTP exposed directly to the internet, or is access restricted through VPN/IP allowlisting?
+
+### Strong design point
+
+The user should ideally **never have access to the Private Inbound/Outbound locations**.
+
+The separation should be:
+
+> **Public SFTP = user access**
+> **Private SFTP = system-to-system access**
+
+That gives you a much cleaner security boundary.
+
+---
+
+# 3. Poller design
+
+This is probably one of the **most important areas to discuss in the POC**.
+
+The Poller is effectively the bridge between Azure and the existing on-premises environment.
+
+### Questions
+
+* Where exactly does the Poller run?
+
+  * On-premises server?
+  * Jump server?
+  * Dedicated Windows server?
+* Does it run as a Windows Service?
+* What account runs the Windows Service?
+* Does that account have access only to the required folders?
+* How frequently does the Poller check the Private Inbound location?
+* What happens if the Poller is down for 30 minutes, 2 hours, or a day?
+* Does it pick up all missed files when it comes back?
+* How does it know which files have already been downloaded?
+* What happens if a file is partially uploaded when the Poller checks the folder?
+
+### Important issue: duplicate downloads
+
+You should explicitly define the **file lifecycle**.
+
+For example:
+
+```text
+Private Inbound
+      ↓
+Poller detects file
+      ↓
+Download successfully
+      ↓
+Move/archive source file
+      ↓
+Continue processing
+```
+
+If the original file remains in Private Inbound after a successful download, the Poller needs another mechanism to know:
+
+> "I already processed this file."
+
+Otherwise, the same file could potentially be downloaded repeatedly.
+
+A better POC question is:
+
+**After successful download, do we move the file to an Archive/Processed folder, or maintain a processing/status mechanism?**
+
+I would strongly favor **moving the successfully downloaded file out of the pickup folder** rather than relying only on filename tracking.
+
+---
+
+# 4. Trigger design
+
+There are actually **different trigger mechanisms in this architecture**, and they should not be treated as the same thing.
+
+### Inbound
+
+User uploads → Defender scan → Azure Function → Private Inbound → Poller
+
+The Azure portion can potentially be event-driven.
+
+But the Poller is likely **polling-based**.
+
+So you should document:
+
+* What triggers the Azure Function?
+* Does Defender completion generate an event?
+* Does the Azure Function wait for the Defender result?
+* What happens when Defender is still scanning?
+* What happens when Defender reports a failure?
+* What happens if the Azure Function fails after Defender says the file is clean?
+
+### Poller
+
+The Poller might run every:
+
+* 1 minute
+* 5 minutes
+* 10 minutes
+
+The interval affects both **performance and user experience**.
+
+For example:
+
+> 5-minute polling means a file may theoretically wait almost 5 minutes before the Poller notices it.
+
+For the POC, define the expected polling interval and why.
+
+---
+
+# 5. File consistency / partial files
+
+This is an important edge case.
+
+Suppose a 500 MB file is being uploaded to SFTP.
+
+The Poller must **not start downloading the file while the user is still uploading it**.
+
+You need a rule such as:
+
+* File must have a temporary extension during upload, then rename when complete.
+* Or Poller checks that file size/timestamp remains unchanged for a defined period.
+* Or SFTP platform provides a reliable upload-completion mechanism.
+
+This should be explicitly tested in the POC.
+
+### Question
+
+**How do we guarantee that the Poller only processes completely uploaded files?**
+
+---
+
+# 6. Performance and scalability
+
+This is another major POC validation area.
+
+You should not only test:
+
+> "Can one file move successfully?"
+
+You should test:
+
+> "Can the architecture handle the expected volume?"
+
+### Important metrics
+
+Capture:
+
+* Number of files per hour
+* Average file size
+* Maximum file size
+* Total GB/TB transferred
+* Concurrent users
+* Concurrent file uploads
+* Polling interval
+* Average processing time
+* Maximum processing time
+* Azure Function execution time
+* Defender scan duration
+* Poller download speed
+* Poller CPU/memory
+* SFTP throughput
+* Network bandwidth
+* Time from user upload → EDI pickup
+
+### Example POC scenarios
+
+Test at least:
+
+* Small file
+* Large file
+* Multiple files uploaded simultaneously
+* Large number of small files
+* Multiple users uploading simultaneously
+* Temporary network failure
+* Poller restart
+* Azure Function restart/failure
+* Defender scan delay
+* Duplicate filename
+* Same file uploaded twice
+
+---
+
+# 7. Failure handling
+
+This is probably the biggest gap that diagrams usually don't show.
+
+Every transition needs an answer to:
+
+> **What happens if this step fails?**
+
+For example:
+
+### Azure Function failure
+
+If Defender says the file is clean but the Azure Function fails to move it:
+
+* Is it retried?
+* How many times?
+* Where does the file remain?
+* How is the failure logged?
+* Is an alert generated?
+
+### Poller failure
+
+If the Poller downloads a file but crashes before moving/archiving the source:
+
+* Will it download the same file again?
+* How do we prevent duplicate processing?
+
+### EDI failure
+
+If the file reaches Local Dropbox but EDI fails:
+
+* Does the file remain there?
+* Is it moved to an error folder?
+* Can EDI retry it?
+
+---
+
+# 8. Retry and idempotency
+
+This deserves its own discussion.
+
+You need to assume that **any component can execute twice** because of retries, restarts, network failures, or timeouts.
+
+Therefore:
+
+> **Moving a file successfully should be safe even if the operation is retried.**
+
+Questions:
+
+* What is the unique identifier for a file?
+* Filename?
+* Filename + size?
+* File hash?
+* Transaction/reference ID?
+* Is duplicate processing allowed?
+
+For a serious production design, I would consider a **unique file ID/reference** and/or checksum rather than relying purely on filenames.
+
+---
+
+# 9. Security
+
+There are several strong security boundaries already, but validate each one.
+
+### User → Public SFTP
+
+Confirm:
+
+* SSH key/password authentication
+* Encryption in transit
+* IP restrictions if applicable
+* User folder isolation
+* Least-privilege permissions
+* Account expiration/deactivation
+* Audit logging
+
+### Azure Function
+
+Confirm:
+
+* Managed identity vs Service Principal
+* Least-privilege permissions
+* Secrets/credentials not stored in code/config
+* Key Vault if secrets are required
+* Private endpoints where applicable
+* Network restrictions
+
+### Poller
+
+This is particularly important because the Poller touches both:
+
+**Azure/private SFTP + on-premises file system**
+
+Therefore its service account should have:
+
+* Only required SFTP permissions
+* Only required local folder permissions
+* No unnecessary administrative privileges
+* Secure credential/key storage
+* Credential rotation
+
+### EDI
+
+The EDI service account should similarly have access only to the required Dropbox folders.
+
+---
+
+# 10. Public vs Private architecture
+
+One of the strongest things to explain in the POC is:
+
+**Why do we have Public and Private locations?**
+
+The answer should be something like:
+
+> Users interact only with the Public SFTP boundary. Files are scanned and then moved into a Private processing boundary. Internal applications and pollers interact with the Private area using service identities, preventing users from directly accessing internal processing locations.
+
+That is a strong architectural/security justification.
+
+---
+
+# 11. Outbound flow questions
+
+The outbound flow needs the same level of detail.
+
+Current concept:
+
+**DCS → Outbound Poller → Private Outbound → Azure Function → Public Outbound → User**
+
+Questions:
+
+* How does the Outbound Poller know a file is ready?
+* Is it polling?
+* How frequently?
+* Who owns the outbound file?
+* Does the Azure Function perform any validation before publishing it?
+* How long does a file remain in Public Outbound?
+* When does it get archived/deleted?
+* Can users download the same file multiple times?
+* Do we need download auditing?
+* What happens if the user never downloads it?
+* What is the retention period?
+
+---
+
+# 12. File naming and collision handling
+
+This is easy to overlook.
+
+Suppose two users upload:
+
+`Claims_12345.xml`
+
+What happens?
+
+Questions:
+
+* Must filenames be unique?
+* Does the system rename files?
+* Is the original filename preserved?
+* What happens if the same filename already exists?
+* Can one user's file overwrite another user's file?
+
+You should define this before implementation.
+
+---
+
+# 13. Monitoring and auditing
+
+For the POC, don't just prove that files move.
+
+Prove that you can **track the complete lifecycle**.
+
+For each file, ideally be able to determine:
+
+```text
+Uploaded
+   ↓
+Defender Scanned
+   ↓
+Scan Passed
+   ↓
+Moved to Private Inbound
+   ↓
+Picked up by Poller
+   ↓
+Placed in Local Dropbox
+   ↓
+Picked up by EDI
+   ↓
+Processed
+```
+
+And outbound:
+
+```text
+Created by DCS
+   ↓
+Picked up by Outbound Poller
+   ↓
+Private Outbound
+   ↓
+Public Outbound
+   ↓
+Downloaded by User
+```
+
+You should be able to answer:
+
+> **Where is my file right now?**
+
+That is a very good POC success criterion.
+
+---
+
+# 14. POC assumptions to document
+
+I would explicitly put these in the POC document:
+
+* Users have valid SFTP accounts and appropriate folder permissions.
+* Public SFTP is available and accessible to authorized users.
+* Defender scanning is available and provides a reliable scan result.
+* Azure Function has the required permissions to move files between the required locations.
+* Private SFTP is not directly accessible by end users.
+* Poller runs under a dedicated service account.
+* Poller has only the required SFTP and Windows file-system permissions.
+* Existing EDI processing remains unchanged.
+* Network connectivity between the Poller and required endpoints is available.
+* File naming/uniqueness rules will be defined.
+* Files are moved/archived after successful processing to prevent duplicate pickup.
+* Retry and failure-handling mechanisms will be validated during the POC.
+* File retention and archival requirements will be defined.
+* Expected file volume and maximum file size will be provided for performance testing.
+
+---
+
+# 15. Questions I would take to the POC discussion
+
+I would actually make a **"Discussion / Open Questions"** section in your document with these:
+
+### Security & Access
+
+* Who owns and provisions user SFTP accounts?
+* Are users isolated to their own folders?
+* What authentication method is mandatory—password, SSH key, or both?
+* Can we use Managed Identity instead of Service Principal where possible?
+* How are service account credentials/SSH keys stored and rotated?
+
+### Poller
+
+* Where will the Poller run?
+* What service account will run it?
+* What is the polling interval?
+* How do we identify successfully processed files?
+* How do we prevent duplicate downloads?
+* What happens when the Poller is unavailable?
+
+### File Processing
+
+* How do we identify a completely uploaded file?
+* What is the maximum file size?
+* What happens with duplicate filenames?
+* What happens to failed files?
+* What is the retry strategy?
+* What is the archive/retention strategy?
+
+### Azure / Defender
+
+* What exactly triggers the Azure Function?
+* How do we handle Defender scan delays?
+* What happens when the scan fails?
+* What happens if Azure Function processing fails?
+* How are retries handled?
+
+### Performance
+
+* Expected files/hour?
+* Expected GB/hour?
+* Maximum file size?
+* Number of concurrent users?
+* Required end-to-end SLA?
+* Required polling interval?
+* Expected Azure Function and Poller throughput?
+
+### Monitoring
+
+* How do we track a file end-to-end?
+* Where are failures logged?
+* How are operational alerts generated?
+* Can support determine the current state of a file without manually checking every location?
+
+---
+
+## The biggest POC validation areas
+
+If you want to keep the discussion **crisp for your team**, I would group everything into these **six areas**:
+
+1. **Security & Permissions** — Are users, service accounts, Poller, Azure Function, and EDI given only the access they need?
+2. **File Lifecycle** — How do we prevent duplicate processing and know when a file is completely uploaded?
+3. **Triggers & Polling** — What is event-driven versus polling, and what happens when a component is unavailable?
+4. **Failure & Recovery** — What happens when Azure, Defender, SFTP, network, Poller, or EDI fails?
+5. **Performance & Scalability** — Can the design handle expected file volume, file size, concurrency, and SLA?
+6. **Monitoring & Audit** — Can we trace every file from user upload through EDI processing and outbound delivery?
+
+**For the POC, I would consider these more important than simply demonstrating that a file can successfully move from point A to point B.** The POC should prove the **security model, file lifecycle, failure recovery, duplicate prevention, performance, and end-to-end traceability**.
