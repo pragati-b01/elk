@@ -1,0 +1,349 @@
+Yes. Since this is a **live POC demo**, I would keep the script very simple and make it follow exactly what you are going to click/type. Don't spend time explaining architecture during the demo unless someone asks.
+
+Based on the flow in your discussion, here is a **step-by-step demo guide focused on what you actually show on screen**. 
+
+## SFTP / Inbound & Outbound Poller POC Demo
+
+### Before starting
+
+Have these windows ready:
+
+1. **SFTP client/terminal** — logged in as the regular SFTP user
+2. **Azure Storage / Blob Storage** — inbound folders
+3. **Jump/Processing Server** — inbound and outbound folders
+4. **SFTP client/terminal** — for outbound verification/download
+5. Keep the **Inbound Poller** and **Outbound Poller** ready to run
+
+Use a **test document** with an easy-to-recognize name, for example:
+
+```text
+POC_Test_001.txt
+```
+
+---
+
+# Step 1 — Login as SFTP User
+
+**Show:** SFTP connection/login.
+
+Say:
+
+> "I'm going to start by logging in as a regular SFTP user."
+
+Then connect to the Blob Storage SFTP endpoint.
+
+After successful login, show the user's home location.
+
+Say:
+
+> "The user is successfully authenticated and is restricted to the appropriate user location."
+
+Don't explain permissions unless someone asks.
+
+---
+
+# Step 2 — Upload the Test File
+
+Use:
+
+```text
+put POC_Test_001.txt
+```
+
+Say:
+
+> "I'm uploading a test document using the SFTP `put` command."
+
+Then show the successful upload.
+
+---
+
+# Step 3 — Show the File in Public Inbound
+
+Go to:
+
+```text
+Public Inbound
+```
+
+Show:
+
+```text
+POC_Test_001.txt
+```
+
+Say:
+
+> "The file is now available in the public inbound location."
+
+Pause here for a few seconds so everyone can see it.
+
+---
+
+# Step 4 — Show the File Moving to Private Inbound
+
+Refresh the Blob Storage location.
+
+Show that the file is no longer sitting in the public inbound location and is now in:
+
+```text
+Private Inbound
+```
+
+Say:
+
+> "The uploaded file has now been processed and moved into the private inbound staging area."
+
+If Defender scanning is part of what you are demonstrating, say:
+
+> "The file goes through the scanning and processing step before it reaches the private staging area."
+
+Don't go into the implementation unless asked.
+
+---
+
+# Step 5 — Run the Inbound Poller
+
+Now move to the **processing/jump server**.
+
+Show the inbound poller.
+
+Run it manually for the demo rather than waiting five minutes.
+
+For example:
+
+```text
+Fusion.InboundPoller.exe
+```
+
+or whatever command you actually use.
+
+Say:
+
+> "The inbound poller connects to the private inbound SFTP location and retrieves the file."
+
+Let it run.
+
+Show the log:
+
+```text
+Connected successfully
+File found: POC_Test_001.txt
+Downloading...
+Download completed
+```
+
+---
+
+# Step 6 — Show the Downloaded File on the Processing Server
+
+Open:
+
+```text
+Processing Server
+    └── Inbound
+         └── Dropbox
+```
+
+Show:
+
+```text
+POC_Test_001.txt
+```
+
+Say:
+
+> "The file has now been downloaded from the private inbound location to the processing server."
+
+This is a good place to pause.
+
+---
+
+# Step 7 — Show the Response File
+
+Now simulate/show the downstream processing.
+
+For the demo, you can have your processing step create:
+
+```text
+POC_Test_001_RESPONSE.txt
+```
+
+or whatever response filename your actual process produces.
+
+Show it in:
+
+```text
+Processing Server
+    └── Outbound
+         └── Completed
+```
+
+Say:
+
+> "The inbound document has been processed, and we now have the response file in the outbound processing location."
+
+This keeps the demo focused—you don't need to explain the actual EDI processing unless someone asks.
+
+---
+
+# Step 8 — Run the Outbound Poller
+
+Run:
+
+```text
+Fusion.OutboundPoller.exe
+```
+
+Say:
+
+> "Now I'll run the outbound poller. It picks up the response file from the processing server and transfers it to the private outbound staging location."
+
+Show the poller log:
+
+```text
+File found:
+POC_Test_001_RESPONSE.txt
+
+Uploading...
+
+Upload completed successfully.
+```
+
+---
+
+# Step 9 — Show Private Outbound
+
+Go back to Azure Blob Storage.
+
+Open:
+
+```text
+Private Outbound
+```
+
+Show:
+
+```text
+POC_Test_001_RESPONSE.txt
+```
+
+or, if your final POC uses user-specific directories:
+
+```text
+Private Outbound
+    └── <SubmitterId>
+         └── POC_Test_001_RESPONSE.txt
+```
+
+Say:
+
+> "The response file is now available in the private outbound staging location."
+
+---
+
+# Step 10 — Show User's Public Outbound / Download Location
+
+Now show the user-specific outbound location:
+
+```text
+Public Outbound
+    └── <SubmitterId>
+         └── POC_Test_001_RESPONSE.txt
+```
+
+Say:
+
+> "The file is then made available in the submitter's outbound download location."
+
+This is the important final step because it demonstrates the complete round trip.
+
+---
+
+# Step 11 — Download the Response as the User
+
+Go back to your SFTP session.
+
+Run:
+
+```text
+ls
+```
+
+or navigate to the outbound location.
+
+Show:
+
+```text
+POC_Test_001_RESPONSE.txt
+```
+
+Then:
+
+```text
+get POC_Test_001_RESPONSE.txt
+```
+
+Say:
+
+> "Finally, I'm downloading the response file as the SFTP user."
+
+Show the downloaded file.
+
+---
+
+# Your complete demo flow
+
+Keep this **one-line flow** in front of you during the demo:
+
+```text
+1. Login as SFTP User
+        ↓
+2. Upload Test File
+        ↓
+3. Show File in Public Inbound
+        ↓
+4. Show File in Private Inbound
+        ↓
+5. Run Inbound Poller
+        ↓
+6. Show File on Processing Server
+        ↓
+7. Show Response File
+        ↓
+8. Run Outbound Poller
+        ↓
+9. Show File in Private Outbound
+        ↓
+10. Show File in User's Public Outbound
+        ↓
+11. Download File as SFTP User
+```
+
+### Very short speaking script
+
+If you want to keep the verbal part extremely short:
+
+> **"First, I'll log in as the SFTP user."**
+
+> **"I'll upload a test document using the SFTP put command."**
+
+> **"The file is now visible in the public inbound location."**
+
+> **"After processing, the file is moved to private inbound."**
+
+> **"I'll now run the inbound poller."**
+
+> **"The poller downloads the file to our processing server."**
+
+> **"The processing step produces the response file."**
+
+> **"I'll now run the outbound poller."**
+
+> **"The response file has been transferred to private outbound."**
+
+> **"The file is then placed in the submitter's outbound download location."**
+
+> **"Finally, I'll log in as the SFTP user and download the response file."**
+
+That is enough for a **2–5 minute technical POC demo**. The architecture, authentication, Event Grid, Defender, permissions, and why you chose SSH keys can all be explained **only if someone asks**. Your source discussion specifically indicates that the POC already has the SSH-key-based download implemented and that the jump server is being used as the processing server for the POC. 
