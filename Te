@@ -1,86 +1,464 @@
-Yes. If your team is willing to create a **dedicated SFTP automation/local user** with `Modify Ownership` over the required download folders, that would allow the Function to perform the ownership change programmatically. I would word the request so the scope and required permissions are explicit.
+using System;
+using System.IO;
+using System.Text;
+using System.Text.RegularExpressions;
+using System.Threading;
+using System.Threading.Tasks;
 
-Hi Team,
+using Azure.Identity;
+using Azure.Security.KeyVault.Secrets;
+using Azure.Storage.Blobs;
+using Azure.Storage.Blobs.Models;
 
-For the Azure SFTP outbound/download workflow, we need a dedicated SFTP local user that can be used by our Azure Function to change the ownership of files after they are moved to the download folder.
+using Renci.SshNet;
+using Renci.SshNet.Sftp;
 
-Currently, the Azure Function uses a Service Principal to move files between the Blob folders. However, the Service Principal cannot change the owner to an Azure SFTP local-user ID through the Azure SDK. The ownership change needs to be performed through the SFTP interface by a local user with the appropriate ownership permission.
+public async Task ProcessOutboundFilesAsync()
+{
+    // =========================================================
+    // EXISTING SERVICE PRINCIPAL CONFIGURATION
+    // =========================================================
 
-Could you please create a dedicated technical SFTP user for this purpose with the following access?
+    var tenantId = _config["AzureSFTPTest-TenID"];
 
-* **Purpose:** Automation account for changing file ownership after files are moved to the outbound/download folder.
-* **Access:** Required download/public folder(s) containing files uploaded/generated for SFTP users.
-* **Permission:** **Modify Ownership (`o`)**.
-* **Required access:** The account should be able to change the owning user/group of files within the applicable download folders, including files created for different SFTP users.
-* **No customer-user access is required:** This account will be used only by the Azure Function for the ownership operation.
-* **Scope:** Please restrict the account to only the required storage container/folders rather than providing broader storage access.
-* **Authentication:** Please provide the supported authentication method for the automation account (SSH key preferred if supported by our configuration).
+    var clientId = _config["kv-AzureSFTPTest-Username"];
 
-The intended workflow is:
+    var clientSecret = _config["kv-AzureSFTPTest-Secret"];
 
-1. Azure Function authenticates using the existing Service Principal.
-2. Function moves/copies the file from the private outbound folder to the appropriate public/download folder.
-3. Function connects to the Azure Storage SFTP endpoint using this dedicated automation user.
-4. Function changes the file owner to the corresponding SFTP local-user ID.
-5. The customer SFTP user downloads the file from their folder.
+    _logger.LogInformation(
+        "Configuration tenantId:{tenantId}, clientId:{clientId}",
+        tenantId,
+        clientId);
 
-For example:
+    var credential =
+        new ClientSecretCredential(
+            tenantId,
+            clientId,
+            clientSecret);
 
-```text
-Service Principal
-       |
-       | Move file
-       v
-Public/Download/User1007/file.xml
-       |
-       | SFTP automation user
-       | Modify Ownership (o)
-       v
-Owner = User1007
-       |
-       v
-User1007 downloads file
-```
+    // =========================================================
+    // EXISTING BLOB CONFIGURATION
+    // =========================================================
 
-Please let us know what user name/permissions and folder scope you recommend for this automation account.
+    string storageAccount = "sthhcsftptest";
 
-Thanks,
-Pragati
+    var blobServiceUri =
+        new Uri(
+            $"https://{storageAccount}.blob.core.windows.net");
 
-If you want, I can also make this **shorter and more like an internal Azure/Infrastructure ticket**, with the exact Azure permissions they need to configure.
-Here is a shorter version suitable for an Azure/Infrastructure ticket:
+    var blobServiceClient =
+        new BlobServiceClient(
+            blobServiceUri,
+            credential);
 
-Hi Team,
+    var containerClient =
+        blobServiceClient.GetBlobContainerClient(
+            "sftp-ingest-test");
 
-We need a dedicated SFTP local user for the Azure outbound/download process.
+    string sourceFolder =
+        "CleanDocuments/Outbound/";
 
-**Requirement:**
+    // =========================================================
+    // SFTP CONFIGURATION
+    // =========================================================
 
-* Create a technical/automation SFTP local user.
-* Grant **Modify Ownership (`o`)** permission.
-* Scope access to the required **download/public folders**.
-* The user must be able to change the owner/group of files created for different SFTP users within those folders.
-* SSH key authentication is preferred, if supported.
+    string sftpHost =
+        _config["AzureSFTP-Host"];
 
-**Purpose:**
+    string sftpUsername =
+        _config["AzureSFTP-OwnerUsername"];
 
-The Azure Function currently uses a Service Principal to move files between Blob folders. After the move, the Function needs to change the file owner to the corresponding SFTP local-user ID so that the intended SFTP user can download the file.
+    string keyVaultUri =
+        _config["AzureSFTP-KeyVaultUri"];
 
-```text
-Service Principal
-      ↓
-Move file to Download folder
-      ↓
-SFTP automation user (Modify Ownership)
-      ↓
-Set owner = corresponding SFTP user
-      ↓
-SFTP user downloads file
-```
+    string privateKeySecretName =
+        _config["AzureSFTP-PrivateKey"];
 
-Please let us know the SFTP username and configuration details once created.
+    // =========================================================
+    // GET SFTP PRIVATE KEY FROM KEY VAULT
+    // =========================================================
 
-Thanks,
-Pragati
+    var keyVaultClient =
+        new SecretClient(
+            new Uri(keyVaultUri),
+            credential);
 
-I can also make it into a **2–3 sentence ServiceNow/Azure ticket description** if that is the format your team uses.
+    KeyVaultSecret privateKeySecret =
+        await keyVaultClient.GetSecretAsync(
+            privateKeySecretName);
+
+    string privateKey =
+        privateKeySecret.Value;
+
+    if (string.IsNullOrWhiteSpace(privateKey))
+    {
+        throw new InvalidOperationException(
+            "SFTP private key was not found in Key Vault.");
+    }
+
+    // =========================================================
+    // CREATE SSH PRIVATE KEY
+    // =========================================================
+
+    using var keyStream =
+        new MemoryStream(
+            Encoding.UTF8.GetBytes(privateKey));
+
+    var privateKeyFile =
+        new PrivateKeyFile(keyStream);
+
+    var authenticationMethod =
+        new PrivateKeyAuthenticationMethod(
+            sftpUsername,
+            privateKeyFile);
+
+    var connectionInfo =
+        new ConnectionInfo(
+            sftpHost,
+            22,
+            sftpUsername,
+            authenticationMethod);
+
+    // =========================================================
+    // CREATE ONE SFTP CONNECTION
+    //
+    // Important:
+    // Do NOT connect/disconnect for every file.
+    // Reuse this connection for all files in this batch.
+    // =========================================================
+
+    using var sftp =
+        new SftpClient(connectionInfo);
+
+    try
+    {
+        sftp.Connect();
+
+        _logger.LogInformation(
+            "Connected to Azure SFTP as {Username}",
+            sftpUsername);
+
+        // =====================================================
+        // PROCESS FILES
+        // =====================================================
+
+        await foreach (
+            BlobItem blobItem in
+            containerClient.GetBlobsAsync(
+                BlobTraits.None,
+                BlobStates.None,
+                sourceFolder,
+                CancellationToken.None))
+        {
+            var sourceBlobName =
+                blobItem.Name;
+
+            // Ignore virtual folders
+            if (sourceBlobName.EndsWith("/"))
+            {
+                continue;
+            }
+
+            string fileName =
+                Path.GetFileName(sourceBlobName);
+
+            // =================================================
+            // GET SUBMITTER ID FROM FILE NAME
+            // =================================================
+
+            Match match =
+                Regex.Match(
+                    fileName,
+                    @"^\d{9}");
+
+            if (!match.Success)
+            {
+                _logger.LogWarning(
+                    "Unable to determine submitter ID from file {FileName}",
+                    fileName);
+
+                continue;
+            }
+
+            string submitterId =
+                match.Value;
+
+            // =================================================
+            // BUILD USER FOLDER PATH
+            // =================================================
+
+            string folderPath =
+                $"{submitterId.Substring(0, 2)}/" +
+                $"{submitterId.Substring(2, 2)}/" +
+                $"{submitterId.Substring(4, 2)}/" +
+                $"{submitterId.Substring(6, 3)}/" +
+                submitterId;
+
+            string destinationPath =
+                $"userhome/{folderPath}/download/batch/";
+
+            string destinationBlobName =
+                $"{destinationPath}{fileName}";
+
+            _logger.LogInformation(
+                "Copying {Source} to {Destination}",
+                fileName,
+                destinationBlobName);
+
+            // =================================================
+            // SOURCE / DESTINATION BLOB
+            // =================================================
+
+            BlobClient sourceBlob =
+                containerClient.GetBlobClient(
+                    sourceBlobName);
+
+            BlobClient destinationBlob =
+                containerClient.GetBlobClient(
+                    destinationBlobName);
+
+            // =================================================
+            // CHECK IF DESTINATION ALREADY EXISTS
+            // =================================================
+
+            if (await destinationBlob.ExistsAsync())
+            {
+                _logger.LogWarning(
+                    "Destination already exists: {Destination}",
+                    destinationBlobName);
+
+                continue;
+            }
+
+            // =================================================
+            // COPY PRIVATE -> PUBLIC
+            // =================================================
+
+            var copyOperation =
+                await destinationBlob.StartCopyFromUriAsync(
+                    sourceBlob.Uri);
+
+            await copyOperation.WaitForCompletionAsync();
+
+            _logger.LogInformation(
+                "Blob copied successfully to: {Destination}",
+                destinationBlobName);
+
+            // =================================================
+            // GET SUBMITTER'S AZURE SFTP USER ID
+            // =================================================
+
+            string submitterSftpUserId =
+                await GetSftpUserIdAsync(
+                    submitterId);
+
+            if (!int.TryParse(
+                    submitterSftpUserId,
+                    out int userId))
+            {
+                _logger.LogError(
+                    "Invalid SFTP UserId {UserId} for submitter {SubmitterId}. " +
+                    "Source file will not be deleted.",
+                    submitterSftpUserId,
+                    submitterId);
+
+                continue;
+            }
+
+            // =================================================
+            // CHANGE FILE OWNER
+            // =================================================
+
+            string sftpDestinationPath =
+                "/" + destinationBlobName;
+
+            try
+            {
+                ChangeOwner(
+                    sftp,
+                    sftpDestinationPath,
+                    userId);
+
+                _logger.LogInformation(
+                    "Owner changed successfully. " +
+                    "File:{FileName}, Submitter:{SubmitterId}, UserId:{UserId}",
+                    fileName,
+                    submitterId,
+                    userId);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "Failed to change owner for {FileName}. " +
+                    "Source file will NOT be deleted.",
+                    fileName);
+
+                continue;
+            }
+
+            // =================================================
+            // VERIFY OWNER
+            // =================================================
+
+            try
+            {
+                var attributes =
+                    sftp.GetAttributes(
+                        sftpDestinationPath);
+
+                _logger.LogInformation(
+                    "Owner verification. File:{FileName}, " +
+                    "Expected:{ExpectedUserId}, Actual:{ActualUserId}",
+                    fileName,
+                    userId,
+                    attributes.UserId);
+
+                if (attributes.UserId != userId)
+                {
+                    _logger.LogError(
+                        "Owner verification failed for {FileName}. " +
+                        "Expected:{ExpectedUserId}, Actual:{ActualUserId}. " +
+                        "Source file will NOT be deleted.",
+                        fileName,
+                        userId,
+                        attributes.UserId);
+
+                    continue;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "Unable to verify owner for {FileName}. " +
+                    "Source file will NOT be deleted.",
+                    fileName);
+
+                continue;
+            }
+
+            // =================================================
+            // DELETE SOURCE ONLY AFTER SUCCESS
+            //
+            // Copy succeeded
+            // Owner changed
+            // Owner verified
+            // =================================================
+
+            await sourceBlob.DeleteIfExistsAsync();
+
+            _logger.LogInformation(
+                "Source Blob deleted successfully: {Source}",
+                fileName);
+        }
+    }
+    finally
+    {
+        if (sftp.IsConnected)
+        {
+            sftp.Disconnect();
+
+            _logger.LogInformation(
+                "Disconnected from Azure SFTP.");
+        }
+    }
+}
+
+
+// =============================================================
+// CHANGE OWNER USING SSH.NET
+// =============================================================
+
+private void ChangeOwner(
+    SftpClient sftp,
+    string sftpDestinationPath,
+    int userId)
+{
+    if (!sftp.IsConnected)
+    {
+        throw new InvalidOperationException(
+            "SFTP client is not connected.");
+    }
+
+    // Get the existing attributes.
+    var attributes =
+        sftp.GetAttributes(
+            sftpDestinationPath);
+
+    int oldUserId =
+        attributes.UserId;
+
+    int oldGroupId =
+        attributes.GroupId;
+
+    _logger.LogInformation(
+        "Changing owner for {File}. " +
+        "OldUserId:{OldUserId}, NewUserId:{NewUserId}, GroupId:{GroupId}",
+        sftpDestinationPath,
+        oldUserId,
+        userId,
+        oldGroupId);
+
+    // Change ONLY the owner.
+    attributes.UserId =
+        userId;
+
+    // Keep the existing group.
+    attributes.GroupId =
+        oldGroupId;
+
+    // Send SETSTAT request through SFTP.
+    sftp.SetAttributes(
+        sftpDestinationPath,
+        attributes);
+}
+
+
+// =============================================================
+// GET SUBMITTER -> AZURE SFTP USER ID
+// =============================================================
+
+private async Task<string> GetSftpUserIdAsync(
+    string submitterId)
+{
+    // =========================================================
+    // IMPORTANT:
+    //
+    // submitterId is NOT necessarily the Azure SFTP UserId.
+    //
+    // Example:
+    //
+    // SubmitterId       = 123456789
+    // Azure SFTP UserId = 1007
+    //
+    // You need to get 1007 from your mapping.
+    // =========================================================
+
+    // Replace this with your actual database/config lookup.
+
+    string sftpUserId =
+        await GetSftpUserIdFromDatabaseAsync(
+            submitterId);
+
+    return sftpUserId;
+}
+
+
+// =============================================================
+// EXAMPLE DATABASE LOOKUP PLACEHOLDER
+// =============================================================
+
+private async Task<string> GetSftpUserIdFromDatabaseAsync(
+    string submitterId)
+{
+    // Replace with your actual database call.
+
+    await Task.CompletedTask;
+
+    // TEST ONLY:
+    //
+    // If your test submitter has Azure SFTP UserId 1007:
+    //
+    return "1007";
+}
