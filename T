@@ -1,377 +1,208 @@
-Absolutely. We will forget cleandocuments and the shared-folder design and document only the configuration you already have, based on your screenshot and the values you confirmed.
-Your confirmed configuration is:
+https://learn.microsoft.com/en-us/azure/storage/blobs/secure-file-transfer-protocol-support?utm_source=chatgpt.com#container-permissions
 
-User	User ID	Required folder	Access
-user1	1000	/userhome/user1folder	RWX only
-pgaddam2	1001	/userhome/pgaddam2	RWX only
-user3	1002	/userhome/user3folder	RWX only
+Yes — you are correct. **Your requirement is specifically to change the owner to the SFTP local user's ID**, not to give `other` read permission.
 
-Azure's current documentation confirms that UserId is the ID used when changing directory ownership with chown, and that ACL authorization can be used to restrict each local user to a particular directory. 
-M
-Microsoft Learn
-+1
-1. First: verify the existing configuration
-Do not make additional changes yet.
-Connect using your administrative SFTP account:
+For example:
 
-sftp admin@<storage-account>.blob.core.windows.net
+```text
+Before:
+Owner = 0 ($superuser)
+Group = 0 ($superuser)
 
-Then:
-ls
-cd userhome
-ls -l
+After:
+Owner = 1007 (lu-1007)
+Group = 1007 or existing group
+```
 
-You should see your existing directories.
-Then run:
+And Azure confirms the important limitation: **an Azure SDK cannot set a local SFTP user's ID as the owning user. Only a local SFTP user can change the owner/group to a local-user ID, and that local user needs `Modify Ownership (o)` permission.** ([Microsoft Learn][1])
 
-ls -ld user1folder
-ls -ld pgaddam2
+So your production requirement leads to this architecture:
 
-If user3folder has already been created:
-ls -ld user3folder
+```text
+Azure Function
+    |
+    | Service Principal
+    | Copy/move file
+    v
+public/outbound/file.xml
+    |
+    | owner currently = superuser
+    |
+    | SFTP connection
+    | using dedicated technical SFTP local user
+    | with Modify Ownership
+    v
+chown 1007 file.xml
+    |
+    v
+Owner = 1007
+```
 
-The important thing is to record the actual owner and group IDs before changing anything.
-For example, you want ultimately to see approximately:
+You don't need to give the **customer's `lu-1007` account** the ownership-changing permission. Create a **technical SFTP local user** specifically for this automation.
 
-user1folder   owner=1000
-pgaddam2      owner=1001
-user3folder   owner=1002
+## C# code for your requirement
 
-The exact display format can vary by SFTP client.
-2. Correct the ownership
-Based on the IDs you confirmed, the commands are:
-user1
-chown 1000 user1folder
+I would use SSH.NET and perform the SFTP `chown` directly.
 
-pgaddam2
-chown 1001 pgaddam2
+```csharp
+using Renci.SshNet;
+using System;
 
-user3
-chown 1002 user3folder
+public static class SftpOwnerService
+{
+    public static void ChangeOwner(
+        string storageAccountName,
+        string automationUser,
+        string automationPassword,
+        string filePath,
+        uint targetUserId)
+    {
+        var host = $"{storageAccountName}.blob.core.windows.net";
 
-Important: Your screenshot appears to contain a chown 1002 associated with pgaddam2. That is not correct according to the IDs you subsequently confirmed. pgaddam2 is 1001.
-Microsoft documents chown specifically for changing the owning local user by User ID. 
-M
-Microsoft Learn
+        using (var sftp = new SftpClient(
+            host,
+            22,
+            automationUser,
+            automationPassword))
+        {
+            sftp.Connect();
 
-3. Set private-folder permissions
-For each user's private directory:
-user1
-chmod 700 user1folder
+            if (!sftp.Exists(filePath))
+            {
+                throw new InvalidOperationException(
+                    $"File does not exist: {filePath}");
+            }
 
-pgaddam2
-chmod 700 pgaddam2
+            // Read current attributes
+            var attributes = sftp.GetAttributes(filePath);
 
-user3
-chmod 700 user3folder
+            var oldOwner = attributes.UserId;
+            var oldGroup = attributes.GroupId;
 
-700 means:
-Owner   = RWX
-Group   = ---
-Other   = ---
+            // Change ONLY the owner.
+            attributes.UserId = targetUserId;
 
-Therefore:
-/userhome/user1folder
-    owner 1000
-    RWX    user1 only
+            // Preserve existing group.
+            attributes.GroupId = oldGroup;
 
-/userhome/pgaddam2
-    owner 1001
-    RWX    pgaddam2 only
+            sftp.SetAttributes(filePath, attributes);
 
-/userhome/user3folder
-    owner 1002
-    RWX    user3 only
+            // Verify
+            var updatedAttributes =
+                sftp.GetAttributes(filePath);
 
-This is consistent with Azure's ACL model, where the owning user, owning group, and other permissions are supported for local-user authorization. Named-user ACL entries are not currently supported. 
-M
-Microsoft Learn
-4. Configure /userhome for traversal
-This is an important part of the setup.
-The users need to be able to traverse /userhome to reach their own directory, but they should not receive read/list access to the contents of /userhome.
+            if (updatedAttributes.UserId != targetUserId)
+            {
+                throw new InvalidOperationException(
+                    $"Unable to change owner for '{filePath}'. " +
+                    $"Expected owner '{targetUserId}', " +
+                    $"actual owner '{updatedAttributes.UserId}'.");
+            }
 
-Conceptually, the required permission is:
+            sftp.Disconnect();
+        }
+    }
+}
+```
 
-/userhome
-    Execute (X)
+Then your Function calls:
 
-not:
-/userhome
+```csharp
+SftpOwnerService.ChangeOwner(
+    storageAccountName,
+    sftpAutomationUser,
+    sftpAutomationPassword,
+    "/public/outbound/response.xml",
+    1007);
+```
+
+The result should be:
+
+```text
+Before:
+
+-rw-r-----  0  0  response.xml
+
+
+After:
+
+-rw-r-----  1007  0  response.xml
+```
+
+If you also need the group changed:
+
+```csharp
+attributes.UserId = 1007;
+attributes.GroupId = 1007;
+```
+
+But **don't change the group unless your requirement specifically requires it**.
+
+### The critical production configuration
+
+The technical local user needs:
+
+```text
+Container: public
+Permissions:
     Read
-    Write
-    Execute
-
-Azure specifically documents that a local user needs Execute permission on the container root and each directory in the path leading to the file/directory being accessed. 
-M
-Microsoft Learn
-Important
-Do not blindly run:
-chmod 701 userhome
-
-until you have inspected the current ACL/permissions and confirmed which identity needs the execute permission.
-Your screenshot indicates that you already made a parent-directory permission change. We should verify the result rather than overwrite it.
-
-From the admin session, run:
-
-ls -ld userhome
-
-and record the result.
-5. Verify each user's Azure local-user configuration
-Go to:
-Storage Account → SFTP → Local users
-
-Check user1.
-
-You need to verify:
-
-Username:
-user1
-
-User ID:
-1000
-
-Allow ACL authorization:
-Enabled
-
-Home directory:
-userhome/user1folder
-
-Then check pgaddam2:
-Username:
-pgaddam2
-
-User ID:
-1001
-
-Allow ACL authorization:
-Enabled
-
-Home directory:
-userhome/pgaddam2
-
-Then check user3:
-Username:
-user3
-
-User ID:
-1002
-
-Allow ACL authorization:
-Enabled
-
-Home directory:
-userhome/user3folder
-
-Azure supports a local user's home directory as a container/directory path, such as container/directory. 
-M
-Microsoft Learn
-6. Check the container permission scopes
-This is one of the most important validation steps.
-For each user:
-
-Storage Account → SFTP → Local users → Edit user → Permissions
-
-Make sure you understand exactly what permissions have been assigned to the userhome container.
-
-Azure states that container permissions apply to all directories and subdirectories in that container. If a user already has sufficient container-level permissions, ACLs cannot be used to take that access away. 
-M
-Microsoft Learn
-+1
-
-Therefore, if your goal is:
-
-user1 can access only user1folder
-you must make sure user1 isn't already being granted broad container permissions that allow access to the other folders.
-This is potentially more important than chmod 700.
-
-7. Verify user1
-Disconnect the administrator:
-exit
-
-Connect as user1:
-sftp user1@<storage-account>.blob.core.windows.net
-
-Then:
-pwd
-ls
-
-Expected:
-/userhome/user1folder
-
-or the equivalent home-directory representation used by the SFTP client.
-The directory should be accessible.
-
-8. Test user1 write access
-Run:
-put test-user1.txt
-
-Expected:
-Upload successful
-
-Then:
-ls
-
-You should see:
-test-user1.txt
-
-Then:
-get test-user1.txt
-
-Expected:
-Download successful
-
-9. Test user1 cannot access pgaddam2
-Try:
-cd ../pgaddam2
-
-Expected:
-Permission denied
-
-Also test:
-cd ../user3folder
-
-Expected:
-Permission denied
-
-Do not consider the configuration validated merely because the user starts in the correct home directory.
-The negative tests are important because Azure evaluates container permissions before ACLs. 
-M
-Microsoft Learn
-
-10. Test pgaddam2
-Disconnect:
-exit
-
-Connect:
-sftp pgaddam2@<storage-account>.blob.core.windows.net
-
-Verify:
-pwd
-ls
-
-Expected home:
-/userhome/pgaddam2
-
-Create a test file:
-put test-pgaddam2.txt
-
-Then:
-get test-pgaddam2.txt
-
-Both should succeed.
-11. Test pgaddam2 isolation
-Try:
-cd ../user1folder
-
-Expected:
-Permission denied
-
-Then:
-cd ../user3folder
-
-Expected:
-Permission denied
-
-This proves pgaddam2 cannot access the other users' folders.
-12. Test user3
-Connect:
-sftp user3@<storage-account>.blob.core.windows.net
-
-Verify:
-pwd
-ls
-
-Expected:
-/userhome/user3folder
-
-Test write:
-put test-user3.txt
-
-Test download:
-get test-user3.txt
-
-Both should succeed.
-13. Test user3 isolation
-Try:
-cd ../user1folder
-
-Expected:
-Permission denied
-
-Then:
-cd ../pgaddam2
-
-Expected:
-Permission denied
-
-14. Final expected configuration
-Your final layout should be:
-Storage Account
-│
-└── userhome
-    │
-    ├── user1folder
-    │      Owner: 1000
-    │      Mode:  700
-    │
-    ├── pgaddam2
-    │      Owner: 1001
-    │      Mode:  700
-    │
-    └── user3folder
-           Owner: 1002
-           Mode:  700
-
-And:
-user1
-  │
-  └── user1folder
-       RWX
-
-pgaddam2
-  │
-  └── pgaddam2
-       RWX
-
-user3
-  │
-  └── user3folder
-       RWX
-
-The intended access matrix is:
-Test	user1	pgaddam2	user3
-Own folder	RWX	RWX	RWX
-user1folder	RWX	Denied	Denied
-pgaddam2	Denied	RWX	Denied
-user3folder	Denied	Denied	RWX
-
-15. Very important checks before declaring success
-Check these four things:
-User IDs
-user1 = 1000
-pgaddam2 = 1001
-user3 = 1002
-Ownership
-user1folder → 1000
-pgaddam2 → 1001
-user3folder → 1002
-Private-folder permissions
-Each folder → 700
-Container permission scopes
-Make sure the users haven't been given broad permissions that bypass the ACL isolation.
-That last item is particularly important: Azure says ACLs are evaluated only when the local user doesn't already have the required container-level permission. 
-M
-Microsoft Learn
-Also check that there are no Default ACLs or additional named ACL entries in the access path. Azure's current known-issues documentation says those aren't supported for SFTP and can result in Permission denied. 
-M
-Microsoft Learn
-
-Microsoft references
-Azure SFTP — Connect using an SFTP client
-Azure SFTP — Authorize access and configure local users
-Azure SFTP — ACLs and permissions
-Azure SFTP — Known issues and limitations
-One correction to my earlier answers: I would not change /userhome or any other permission with a new chmod command until you show me the output of ls -ld userhome, ls -ld user1folder, and ls -ld pgaddam2. That lets us evaluate exactly what your screenshot changes produced instead of guessing.
-
-M
-Sources
+    Modify Ownership
+```
+
+For example:
+
+```text
+sftp-function-owner
+        |
+        +-- public
+              +-- Read
+              +-- Modify Ownership
+```
+
+`Modify Ownership` is exactly the Azure SFTP permission intended for changing the owning user/group. ([Microsoft Learn][1])
+
+### Your complete workflow
+
+I would implement your poller as:
+
+```text
+Private/Outbound
+       |
+       v
+Azure Function
+       |
+       | Service Principal
+       v
+Copy/move file
+       |
+       v
+Public/Outbound
+       |
+       | SFTP technical user
+       | Modify Ownership
+       v
+chown 1007 file
+       |
+       v
+Verify owner = 1007
+       |
+       v
+Customer SFTP user downloads
+```
+
+This satisfies your original requirement:
+
+* **No manual intervention**
+* **No `other=r` workaround**
+* **No ACL workaround**
+* **Customer remains `lu-1007`**
+* **Function does the operation automatically**
+* **Owner actually becomes `1007`**
+* **Service principal continues to handle Blob/Data Lake copy/move**
+* **Dedicated SFTP technical account handles only ownership**
+
+One important correction to my earlier answer: **you were right to reject the `other=r` approach for your requirement.** The Azure documentation explicitly confirms that changing the owner to a local-user ID is an SFTP operation and requires `Modify Ownership`; the SDK cannot do that part. ([Microsoft Learn][1])
+
+If you want, I can now take your **existing Azure Function copy/move code** and give you the **complete combined C# method**: `copy → wait for completion → chown 1007 → verify → delete source`, using your current architecture.
+
+[1]: https://learn.microsoft.com/en-us/azure/storage/blobs/secure-file-transfer-protocol-support?utm_source=chatgpt.com "SFTP support for Azure Blob Storage - Azure Storage | Microsoft Learn"
