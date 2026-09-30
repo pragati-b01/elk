@@ -1,0 +1,86 @@
+Yes. If your team is willing to create a **dedicated SFTP automation/local user** with `Modify Ownership` over the required download folders, that would allow the Function to perform the ownership change programmatically. I would word the request so the scope and required permissions are explicit.
+
+Hi Team,
+
+For the Azure SFTP outbound/download workflow, we need a dedicated SFTP local user that can be used by our Azure Function to change the ownership of files after they are moved to the download folder.
+
+Currently, the Azure Function uses a Service Principal to move files between the Blob folders. However, the Service Principal cannot change the owner to an Azure SFTP local-user ID through the Azure SDK. The ownership change needs to be performed through the SFTP interface by a local user with the appropriate ownership permission.
+
+Could you please create a dedicated technical SFTP user for this purpose with the following access?
+
+* **Purpose:** Automation account for changing file ownership after files are moved to the outbound/download folder.
+* **Access:** Required download/public folder(s) containing files uploaded/generated for SFTP users.
+* **Permission:** **Modify Ownership (`o`)**.
+* **Required access:** The account should be able to change the owning user/group of files within the applicable download folders, including files created for different SFTP users.
+* **No customer-user access is required:** This account will be used only by the Azure Function for the ownership operation.
+* **Scope:** Please restrict the account to only the required storage container/folders rather than providing broader storage access.
+* **Authentication:** Please provide the supported authentication method for the automation account (SSH key preferred if supported by our configuration).
+
+The intended workflow is:
+
+1. Azure Function authenticates using the existing Service Principal.
+2. Function moves/copies the file from the private outbound folder to the appropriate public/download folder.
+3. Function connects to the Azure Storage SFTP endpoint using this dedicated automation user.
+4. Function changes the file owner to the corresponding SFTP local-user ID.
+5. The customer SFTP user downloads the file from their folder.
+
+For example:
+
+```text
+Service Principal
+       |
+       | Move file
+       v
+Public/Download/User1007/file.xml
+       |
+       | SFTP automation user
+       | Modify Ownership (o)
+       v
+Owner = User1007
+       |
+       v
+User1007 downloads file
+```
+
+Please let us know what user name/permissions and folder scope you recommend for this automation account.
+
+Thanks,
+Pragati
+
+If you want, I can also make this **shorter and more like an internal Azure/Infrastructure ticket**, with the exact Azure permissions they need to configure.
+Here is a shorter version suitable for an Azure/Infrastructure ticket:
+
+Hi Team,
+
+We need a dedicated SFTP local user for the Azure outbound/download process.
+
+**Requirement:**
+
+* Create a technical/automation SFTP local user.
+* Grant **Modify Ownership (`o`)** permission.
+* Scope access to the required **download/public folders**.
+* The user must be able to change the owner/group of files created for different SFTP users within those folders.
+* SSH key authentication is preferred, if supported.
+
+**Purpose:**
+
+The Azure Function currently uses a Service Principal to move files between Blob folders. After the move, the Function needs to change the file owner to the corresponding SFTP local-user ID so that the intended SFTP user can download the file.
+
+```text
+Service Principal
+      ↓
+Move file to Download folder
+      ↓
+SFTP automation user (Modify Ownership)
+      ↓
+Set owner = corresponding SFTP user
+      ↓
+SFTP user downloads file
+```
+
+Please let us know the SFTP username and configuration details once created.
+
+Thanks,
+Pragati
+
+I can also make it into a **2–3 sentence ServiceNow/Azure ticket description** if that is the format your team uses.
